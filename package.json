@@ -1,0 +1,16 @@
+{
+  "name": "homglai-service-core",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.5.2",
+  "scripts": {
+    "build": "pnpm --filter \"./apps/**\" --filter \"./packages/**\" run build",
+    "dev": "pnpm --parallel run dev",
+    "lint": "pnpm --parallel run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.5.0",
+    "typescript": "^5.7.3"
+  }
+}

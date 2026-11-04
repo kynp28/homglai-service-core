@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================
+// 1. Users & Roles
+// ==============================
+
+model Employee {
+  id         Int            @id @default(autoincrement())
+  name       String
+  role       EmployeeRole   @default(TECHNICIAN)
+  status     EmployeeStatus @default(AVAILABLE)
+  lineUserId String?        @unique
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  assignedOrders RepairOrder[] @relation("AssignedTechnician")
+  statusLogs     StatusLog[]
+}
+
+model Customer {
+  id         Int      @id @default(autoincrement())
+  name       String
+  phone      String   @unique
+  lineUserId String?  @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  machines     Machine[]
+  repairOrders RepairOrder[]
+}
+
+// ==============================
+// 2. Master Data (Templates)
+// ==============================
+
+model SymptomCategory {
+  id       Int       @id @default(autoincrement())
+  name     String
+  symptoms Symptom[]
+}
+
+model Symptom {
+  id         Int             @id @default(autoincrement())
+  name       String
+  categoryId Int
+  category   SymptomCategory @relation(fields: [categoryId], references: [id])
+
+  repairOrders RepairOrderSymptom[]
+}
+
+// ==============================
+// 3. Core Business (Repairs)
+// ==============================
+
+model Machine {
+  id           Int      @id @default(autoincrement())
+  brand        String
+  model        String
+  serialNumber String?
+  customerId   Int
+  customer     Customer @relation(fields: [customerId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  repairOrders RepairOrder[]
+}
+
+model RepairOrder {
+  id           Int          @id @default(autoincrement())
+  jobNumber    String       @unique
+  status       RepairStatus @default(NEW)
+
+  // Relations
+  customerId   Int
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  machineId    Int
+  machine      Machine      @relation(fields: [machineId], references: [id])
+
+  // Queue & Assignment
+  technicianId Int?
+  technician   Employee?    @relation("AssignedTechnician", fields: [technicianId], references: [id])
+
+  // Details
+  otherSymptom String?      @db.Text
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  symptoms    RepairOrderSymptom[]
+  repairItems RepairItem[]
+  statusLogs  StatusLog[]
+}
+
+// Mapping Table สำหรับอาการเสีย (Many-to-Many)
+model RepairOrderSymptom {
+  repairOrderId Int
+  symptomId     Int
+
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  symptom       Symptom     @relation(fields: [symptomId], references: [id])
+
+  @@id([repairOrderId, symptomId])
+}
+
+// ==============================
+// 4. Itemized Approvals (วงจรเสนอราคา)
+// ==============================
+
+model RepairItem {
+  id            Int         @id @default(autoincrement())
+  repairOrderId Int
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+
+  name          String
+  price         Decimal     @db.Decimal(10, 2)
+  status        ItemStatus  @default(PENDING)
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+// ==============================
+// 5. Tracking & Logs
+// ==============================
+
+model StatusLog {
+  id            Int          @id @default(autoincrement())
+  repairOrderId Int
+  repairOrder   RepairOrder  @relation(fields: [repairOrderId], references: [id])
+
+  status        RepairStatus
+  changedById   Int
+  changedBy     Employee     @relation(fields: [changedById], references: [id])
+  note          String?      @db.Text
+
+  createdAt     DateTime     @default(now())
+}
+
+// ==============================
+// Enums
+// ==============================
+
+enum EmployeeRole {
+  ADMIN
+  TECHNICIAN
+  RECEPTIONIST
+}
+
+enum EmployeeStatus {
+  AVAILABLE
+  BUSY
+  OFFLINE
+}
+
+enum RepairStatus {
+  NEW
+  INSPECTING
+  WAITING_APPROVAL
+  REPAIRING
+  COMPLETED
+  DELIVERED
+  CANCELLED
+}
+
+enum ItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
