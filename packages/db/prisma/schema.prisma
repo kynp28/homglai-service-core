@@ -12,13 +12,16 @@ datasource db {
 // ==============================
 
 model Employee {
-  id         Int            @id @default(autoincrement())
-  name       String
-  role       EmployeeRole   @default(TECHNICIAN)
-  status     EmployeeStatus @default(AVAILABLE)
-  lineUserId String?        @unique
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
+  id           Int            @id @default(autoincrement())
+  username     String         @unique
+  passwordHash String
+  name         String
+  role         EmployeeRole   @default(TECHNICIAN)
+  status       EmployeeStatus @default(AVAILABLE)
+  isActive     Boolean        @default(true)
+  lineUserId   String?        @unique
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   assignedOrders RepairOrder[] @relation("AssignedTechnician")
   statusLogs     StatusLog[]
@@ -73,9 +76,10 @@ model Machine {
 }
 
 model RepairOrder {
-  id           Int          @id @default(autoincrement())
-  jobNumber    String       @unique
-  status       RepairStatus @default(NEW)
+  id            Int          @id @default(autoincrement())
+  jobNumber     String       @unique
+  trackingToken String       @unique
+  status        RepairStatus @default(NEW)
 
   // Relations
   customerId   Int
@@ -135,8 +139,8 @@ model StatusLog {
   repairOrder   RepairOrder  @relation(fields: [repairOrderId], references: [id])
 
   status        RepairStatus
-  changedById   Int
-  changedBy     Employee     @relation(fields: [changedById], references: [id])
+  changedById   Int?
+  changedBy     Employee?    @relation(fields: [changedById], references: [id])
   note          String?      @db.Text
 
   createdAt     DateTime     @default(now())

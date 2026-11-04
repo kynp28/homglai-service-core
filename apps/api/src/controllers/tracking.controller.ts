@@ -1,20 +1,31 @@
 import { Request, Response } from 'express';
+import prisma from '@homglai/db';
 import { SseService } from '../services/sse.service';
 
 export class TrackingController {
-  static streamTrackingUpdates(req: Request, res: Response): void {
-    const { jobNumber } = req.params;
+  static async streamTrackingUpdates(req: Request, res: Response): Promise<void> {
+    const { trackingToken } = req.params;
 
-    if (!jobNumber || typeof jobNumber !== 'string') {
-      res.status(400).json({ error: 'jobNumber is required' });
+    if (!trackingToken || typeof trackingToken !== 'string') {
+      res.status(400).json({ error: 'trackingToken is required' });
+      return;
+    }
+
+    const order = await prisma.repairOrder.findUnique({
+      where: { trackingToken },
+      select: { id: true, trackingToken: true },
+    });
+
+    if (!order) {
+      res.status(404).json({ error: 'Invalid tracking token' });
       return;
     }
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
 
-    // Register client for this specific job number
-    SseService.addClient(jobNumber, res);
+    SseService.addClient(trackingToken, res);
   }
 }

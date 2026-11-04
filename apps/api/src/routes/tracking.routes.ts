@@ -5,13 +5,13 @@ const router = Router();
 
 /**
  * @openapi
- * /api/tracking/stream/{jobNumber}:
+ * /api/tracking/stream/{trackingToken}:
  *   get:
  *     summary: Establish SSE connection for live tracking
- *     description: Opens a persistent Server-Sent Events stream for a specific repair order.
+ *     description: Opens a persistent Server-Sent Events stream using an order trackingToken.
  *     parameters:
  *       - in: path
- *         name: jobNumber
+ *         name: trackingToken
  *         required: true
  *         schema:
  *           type: string
@@ -22,7 +22,9 @@ const router = Router();
  *           text/event-stream:
  *             schema:
  *               type: string
+ *       404:
+ *         description: Invalid tracking token.
  */
-router.get('/stream/:jobNumber', TrackingController.streamTrackingUpdates);
+router.get('/stream/:trackingToken', TrackingController.streamTrackingUpdates);
 
 export default router;

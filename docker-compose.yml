@@ -3,12 +3,23 @@ services:
     image: mysql:8.0
     container_name: homglai-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
       MYSQL_DATABASE: homglai_db
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+  mysql-test:
+    image: mysql:8.0
+    container_name: homglai-mysql-test
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: homglai_db_test
+    ports:
+      - "127.0.0.1:3307:3306"
     restart: unless-stopped
 
 volumes:

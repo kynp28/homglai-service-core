@@ -1,14 +1,14 @@
 import { Response } from 'express';
 
-// Store connections mapped by jobNumber
+// Store connections mapped by trackingToken
 const clients = new Map<string, Set<Response>>();
 
 export class SseService {
-  static addClient(jobNumber: string, res: Response) {
-    if (!clients.has(jobNumber)) {
-      clients.set(jobNumber, new Set());
+  static addClient(trackingToken: string, res: Response) {
+    if (!clients.has(trackingToken)) {
+      clients.set(trackingToken, new Set());
     }
-    clients.get(jobNumber)!.add(res);
+    clients.get(trackingToken)!.add(res);
 
     // Keep connection alive
     const intervalId = setInterval(() => {
@@ -18,21 +18,21 @@ export class SseService {
     // Remove client on connection close
     res.on('close', () => {
       clearInterval(intervalId);
-      const jobClients = clients.get(jobNumber);
-      if (jobClients) {
-        jobClients.delete(res);
-        if (jobClients.size === 0) {
-          clients.delete(jobNumber);
+      const tokenClients = clients.get(trackingToken);
+      if (tokenClients) {
+        tokenClients.delete(res);
+        if (tokenClients.size === 0) {
+          clients.delete(trackingToken);
         }
       }
     });
   }
 
-  static broadcastUpdate(jobNumber: string, payload: any) {
-    const jobClients = clients.get(jobNumber);
-    if (jobClients) {
+  static broadcastUpdate(trackingToken: string, payload: any) {
+    const tokenClients = clients.get(trackingToken);
+    if (tokenClients) {
       const data = `data: ${JSON.stringify(payload)}\n\n`;
-      jobClients.forEach((client) => {
+      tokenClients.forEach((client) => {
         client.write(data);
       });
     }
