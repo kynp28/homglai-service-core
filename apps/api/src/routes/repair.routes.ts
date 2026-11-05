@@ -11,46 +11,125 @@ const router = Router();
  *     summary: Create a new repair order
  *     security:
  *       - bearerAuth: []
- *     description: Registers or updates customer, registers machine, links symptoms, and opens a repair order with NEW status. Accessible by RECEPTIONIST and ADMIN.
+ *     description: |
+ *       Registers or updates customer, registers machine, links symptoms, and opens a repair order with NEW status
+ *       using the fields of the paper intake form (SRS 2). Accessible by RECEPTIONIST and ADMIN.
+ *       Required minimum: customer name + phone, machine brand + model, at least one symptom.
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - customer
- *               - machine
- *             properties:
- *               customer:
- *                 type: object
- *                 required:
- *                   - name
- *                   - phone
- *                 properties:
- *                   name: { type: string }
- *                   phone: { type: string }
- *               machine:
- *                 type: object
- *                 required:
- *                   - brand
- *                   - model
- *                 properties:
- *                   brand: { type: string }
- *                   model: { type: string }
- *                   serialNumber: { type: string }
- *               symptomIds:
- *                 type: array
- *                 items: { type: integer }
- *                 example: [1, 2]
- *               otherSymptom: { type: string }
+ *             $ref: '#/components/schemas/RepairIntakeCreate'
  *     responses:
  *       201:
  *         description: Repair order created successfully.
+ *       400:
+ *         description: Validation failed (e.g. unknown accessories key, IN_WARRANTY without warrantyExpiryDate, receivedDate in the future).
  *       401:
  *         description: Unauthorized.
  *       403:
  *         description: Forbidden.
+ *       409:
+ *         description: paperReceiptNo is already used by another repair order.
+ *
+ * components:
+ *   schemas:
+ *     Accessories:
+ *       type: object
+ *       additionalProperties: false
+ *       description: Accessories received with the machine (SRS 2.1). Unknown keys are rejected.
+ *       properties:
+ *         drainTray: { type: boolean, default: false }
+ *         portafilter: { type: boolean, default: false }
+ *         basket1Shot: { type: boolean, default: false }
+ *         basket2Shot: { type: boolean, default: false }
+ *         powerCord: { type: boolean, default: false }
+ *         waterTank: { type: boolean, default: false }
+ *         tamper: { type: boolean, default: false }
+ *         steamWandCover: { type: boolean, default: false }
+ *         other: { type: string, nullable: true, maxLength: 100 }
+ *     CareAdvice:
+ *       type: object
+ *       additionalProperties: false
+ *       properties:
+ *         cleanAfterUse: { type: boolean, default: false }
+ *         noOverload: { type: boolean, default: false }
+ *     RepairIntakeFields:
+ *       type: object
+ *       properties:
+ *         paperBookNo: { type: string, maxLength: 20, nullable: true, example: "112" }
+ *         paperReceiptNo: { type: string, pattern: '^\d{1,10}$', nullable: true, example: "5595", description: "Digits only, unique" }
+ *         receivedDate: { type: string, format: date, example: "2026-11-05", description: "Default = today (Asia/Bangkok). Max 1 day in the future." }
+ *         warrantyStatus: { type: string, enum: [IN_WARRANTY, OUT_OF_WARRANTY], nullable: true }
+ *         warrantyExpiryDate: { type: string, format: date, nullable: true, description: Required when IN_WARRANTY; not allowed otherwise }
+ *         billingType: { type: string, enum: [CHARGE_OUT_OF_WARRANTY, NO_CHARGE_IN_WARRANTY, CHARGE_IN_WARRANTY], nullable: true }
+ *         accessories: { $ref: '#/components/schemas/Accessories' }
+ *         loanerMachine: { type: boolean, default: false }
+ *         loanerNote: { type: string, maxLength: 500, nullable: true }
+ *         careAdvice: { $ref: '#/components/schemas/CareAdvice' }
+ *         warningNote: { type: string, maxLength: 2000, nullable: true }
+ *         otherSymptom: { type: string, nullable: true }
+ *     RepairIntakeCreate:
+ *       allOf:
+ *         - $ref: '#/components/schemas/RepairIntakeFields'
+ *         - type: object
+ *           required: [customer, machine, symptomIds]
+ *           properties:
+ *             workType: { type: string, enum: [REPAIR], default: REPAIR }
+ *             customer:
+ *               type: object
+ *               required: [name, phone]
+ *               properties:
+ *                 name: { type: string, example: "บจก. ชวัลชา" }
+ *                 phone: { type: string, example: "0812345678" }
+ *                 address: { type: string, nullable: true }
+ *             machine:
+ *               type: object
+ *               required: [brand, model]
+ *               properties:
+ *                 brand: { type: string, example: GEF }
+ *                 model: { type: string, example: "Aa+" }
+ *                 serialNumber: { type: string }
+ *             symptomIds:
+ *               type: array
+ *               minItems: 1
+ *               items: { type: integer }
+ *               example: [1, 2]
+ *     RepairIntakeUpdate:
+ *       allOf:
+ *         - $ref: '#/components/schemas/RepairIntakeFields'
+ *         - type: object
+ *           additionalProperties: false
+ *           description: Partial update. status, technicianId, jobNumber and customer.phone are rejected (400).
+ *           properties:
+ *             customer:
+ *               type: object
+ *               additionalProperties: false
+ *               properties:
+ *                 name: { type: string }
+ *                 address: { type: string, nullable: true }
+ *             machine:
+ *               type: object
+ *               additionalProperties: false
+ *               properties:
+ *                 brand: { type: string }
+ *                 model: { type: string }
+ *                 serialNumber: { type: string, nullable: true }
+ *             symptomIds:
+ *               type: array
+ *               minItems: 1
+ *               items: { type: integer }
+ *     RepairItemCreate:
+ *       type: object
+ *       required: [name]
+ *       properties:
+ *         name: { type: string, example: "ปั๊มน้ำ" }
+ *         quantity: { type: integer, minimum: 1, maximum: 999, default: 1, description: "Hours for LABOR_HOURS" }
+ *         unitPrice: { type: number, example: 250, description: "> 0 (0 allowed for LABOR_HOURS), max 2 decimals" }
+ *         price: { type: number, deprecated: true, description: "Legacy alias of unitPrice" }
+ *         barcode: { type: string, maxLength: 64, nullable: true, example: "1681573" }
+ *         itemType: { type: string, enum: [PART, TRAVEL_FEE, LABOR_HOURS, SERVICE_FEE], default: PART }
  */
 router.post('/', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairController.createRepair);
 
@@ -70,6 +149,7 @@ router.post('/', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairContr
  *         schema: { type: integer }
  *       - in: query
  *         name: search
+ *         description: Matches jobNumber, paperReceiptNo, paperBookNo, customer phone or customer name (max 100 chars)
  *         schema: { type: string }
  *       - in: query
  *         name: page
@@ -77,9 +157,10 @@ router.post('/', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairContr
  *       - in: query
  *         name: limit
  *         schema: { type: integer, default: 20 }
+ *     description: TECHNICIAN sees only orders assigned to them (including ones awaiting acceptance); unassigned NEW orders are not listed.
  *     responses:
  *       200:
- *         description: List of repair orders
+ *         description: List of repair orders (summary incl. paperReceiptNo, paperBookNo, receivedDate, warrantyStatus)
  *       401:
  *         description: Unauthorized
  */
@@ -97,17 +178,58 @@ router.get('/', authenticate, RepairController.getRepairs);
  *         name: id
  *         required: true
  *         schema: { type: integer }
+ *     description: |
+ *       Full intake data (paper form fields, warranty, accessories, careAdvice, ...), items with
+ *       quantity / unitPrice / amount / itemType / barcode / resolution fields, and totalAmount
+ *       (sum of item amounts excluding REJECTED, no VAT/discount). TECHNICIAN may only view orders assigned to them.
  *     responses:
  *       200:
  *         description: Repair order details
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden (Technician viewing unassigned/other order)
+ *         description: Forbidden (Technician viewing an order not assigned to them, including unassigned NEW orders)
  *       404:
  *         description: Not found
  */
 router.get('/:id', authenticate, RepairController.getRepairById);
+
+/**
+ * @openapi
+ * /api/repairs/{id}:
+ *   patch:
+ *     summary: Edit intake data of a repair order
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       RECEPTIONIST/ADMIN only. Edits paper-form / customer (name, address) / machine / symptoms / warranty /
+ *       accessories / loaner / billingType / careAdvice / warningNote / receivedDate / paperBookNo / paperReceiptNo.
+ *       Cannot change status, technicianId or jobNumber. Not allowed on DELIVERED or CANCELLED orders.
+ *       A StatusLog entry records who edited which fields (field names only).
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/RepairIntakeUpdate'
+ *     responses:
+ *       200:
+ *         description: Updated repair order details (same shape as GET /api/repairs/{id})
+ *       400:
+ *         description: Validation failed or forbidden field (status/technicianId/jobNumber)
+ *       403:
+ *         description: Forbidden (TECHNICIAN)
+ *       404:
+ *         description: Not found
+ *       409:
+ *         description: Order is DELIVERED/CANCELLED, or paperReceiptNo already used
+ */
+router.patch('/:id', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairController.updateRepair);
 
 /**
  * @openapi
@@ -116,7 +238,10 @@ router.get('/:id', authenticate, RepairController.getRepairById);
  *     summary: Add a repair item and trigger approval loop
  *     security:
  *       - bearerAuth: []
- *     description: Adds a part/item to the repair order. Accessible by the assigned TECHNICIAN or ADMIN.
+ *     description: |
+ *       Adds an item (PART / TRAVEL_FEE / LABOR_HOURS / SERVICE_FEE) to the repair order. Accessible by the assigned
+ *       TECHNICIAN or ADMIN. Response item includes quantity, unitPrice, amount (= quantity x unitPrice), itemType,
+ *       barcode and the legacy `price` alias (= unitPrice, kept temporarily).
  *     parameters:
  *       - in: path
  *         name: id
@@ -128,17 +253,7 @@ router.get('/:id', authenticate, RepairController.getRepairById);
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - name
- *               - price
- *             properties:
- *               name:
- *                 type: string
- *                 example: "Water Pump"
- *               price:
- *                 type: number
- *                 example: 2500
+ *             $ref: '#/components/schemas/RepairItemCreate'
  *     responses:
  *       201:
  *         description: Item added and status updated.

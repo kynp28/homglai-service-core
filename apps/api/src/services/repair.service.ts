@@ -3,20 +3,57 @@ import prisma, { Prisma, RepairStatus } from '@homglai/db';
 import { SseService } from './sse.service';
 import { AppError } from '../utils/app-error';
 import { validateStatusTransition } from '../config/repair-status';
-import { getBangkokYearMonth, getBangkokDateOnly } from '../utils/date';
+import { getBangkokYearMonth, getBangkokDateOnly, dateOnlyToDate } from '../utils/date';
 import { AssignmentService } from './assignment.service';
 import { LineWebhookService } from './line-webhook.service';
 import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
-import { withLegacyPrice } from '../utils/repair-item-view';
+import { computeTotalAmount, toRepairItemView } from '../utils/repair-item-view';
+import {
+  AddRepairItemInput,
+  CreateRepairOrderInput,
+  UpdateRepairOrderInput,
+  warrantyConsistencyError,
+} from '../validators/repair.validator';
+
+/** Orders in these states are closed: intake data can no longer be edited. */
+const CLOSED_STATUSES: RepairStatus[] = ['DELIVERED', 'CANCELLED'];
+
+/** Returns true when a Prisma P2002 error was raised by the given unique field. */
+function isUniqueViolationOn(err: any, field: string): boolean {
+  if (err?.code !== 'P2002') return false;
+  const target = err?.meta?.target;
+  const targetText = Array.isArray(target) ? target.join(',') : String(target ?? '');
+  return targetText.includes(field) || String(err?.message ?? '').includes(field);
+}
+
+function paperReceiptConflict(paperReceiptNo: string): AppError {
+  return new AppError(409, `Paper receipt number ${paperReceiptNo} is already used by another repair order`);
+}
+
+/** JSON comparison that ignores key order (MySQL JSON columns do not preserve it). */
+function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value === 'object') {
+    const entries = Object.keys(value as object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as any)[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function dateOnlyString(value: Date | null | undefined): string | null {
+  return value ? value.toISOString().slice(0, 10) : null;
+}
+
+/** Nullable JSON input -> Prisma write value (explicit null must be written as DbNull). */
+function jsonWrite(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return value === null || value === undefined ? Prisma.DbNull : (value as Prisma.InputJsonValue);
+}
 
 export class RepairService {
-  static async createRepairOrder(data: {
-    customer: { name: string; phone: string };
-    machine: { brand: string; model: string; serialNumber?: string | null };
-    symptomIds: number[];
-    otherSymptom?: string | null;
-    receptionistId: number;
-  }) {
+  static async createRepairOrder(data: CreateRepairOrderInput & { receptionistId: number }) {
     // 1. Verify all symptom IDs exist in database
     if (data.symptomIds && data.symptomIds.length > 0) {
       const existingSymptoms = await prisma.symptom.findMany({
@@ -28,17 +65,35 @@ export class RepairService {
       }
     }
 
+    // 2. Friendly early check for a duplicate paper receipt number (the unique index is the real guard)
+    if (data.paperReceiptNo) {
+      const duplicate = await prisma.repairOrder.findUnique({
+        where: { paperReceiptNo: data.paperReceiptNo },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw paperReceiptConflict(data.paperReceiptNo);
+      }
+    }
+
     const maxRetries = 10;
     let createdOrder: any = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         createdOrder = await prisma.$transaction(async (tx) => {
-          // 1. Upsert Customer
+          // 1. Upsert Customer (address is only overwritten when a new value is provided)
           const customer = await tx.customer.upsert({
             where: { phone: data.customer.phone },
-            update: { name: data.customer.name },
-            create: { name: data.customer.name, phone: data.customer.phone },
+            update: {
+              name: data.customer.name,
+              ...(data.customer.address ? { address: data.customer.address } : {}),
+            },
+            create: {
+              name: data.customer.name,
+              phone: data.customer.phone,
+              address: data.customer.address ?? null,
+            },
           });
 
           // 2. Machine Deduplication: Reuse if same serialNumber exists for this customer
@@ -102,6 +157,7 @@ export class RepairService {
           const jobNumber = `${prefix}-${nextSeq.toString().padStart(4, '0')}`;
 
           const trackingToken = crypto.randomBytes(24).toString('base64url');
+          const now = new Date();
 
           // 4. Create Repair Order with Symptoms and initial StatusLog
           const repairOrder = await tx.repairOrder.create({
@@ -112,7 +168,19 @@ export class RepairService {
               machineId,
               otherSymptom: data.otherSymptom || null,
               status: 'NEW',
-              receivedDate: getBangkokDateOnly(new Date()),
+              receivedDate: data.receivedDate ? dateOnlyToDate(data.receivedDate) : getBangkokDateOnly(now),
+              workType: 'REPAIR',
+              paperBookNo: data.paperBookNo ?? null,
+              paperReceiptNo: data.paperReceiptNo ?? null,
+              warrantyStatus: data.warrantyStatus ?? null,
+              warrantyExpiryDate: data.warrantyExpiryDate ? dateOnlyToDate(data.warrantyExpiryDate) : null,
+              billingType: data.billingType ?? null,
+              loanerMachine: data.loanerMachine ?? false,
+              loanerNote: data.loanerNote ?? null,
+              accessories: jsonWrite(data.accessories),
+              careAdvice: jsonWrite(data.careAdvice),
+              warningNote: data.warningNote ?? null,
+              lastActivityAt: now,
               symptoms: {
                 create: data.symptomIds.map((id) => ({ symptomId: id })),
               },
@@ -136,6 +204,10 @@ export class RepairService {
 
         break;
       } catch (err: any) {
+        // A duplicate paper receipt number is a user error: never retry it (the retry loop is for jobNumber races)
+        if (data.paperReceiptNo && isUniqueViolationOn(err, 'paperReceiptNo')) {
+          throw paperReceiptConflict(data.paperReceiptNo);
+        }
         if (err.code === 'P2002' && attempt < maxRetries - 1) {
           await new Promise((res) => setTimeout(res, 30 * (attempt + 1) + Math.random() * 50));
           continue;
@@ -167,10 +239,189 @@ export class RepairService {
     return withPublicCustomer(finalOrder ?? createdOrder);
   }
 
+  /**
+   * PATCH /api/repairs/:id — edit intake data only (paper form, customer name/address, machine,
+   * symptoms, warranty, accessories, loaner, billing, care advice, warning note).
+   * status / technicianId / jobNumber are rejected by the validator. Closed orders cannot be edited.
+   * A StatusLog (current status) records who changed which fields (names only, no values).
+   */
+  static async updateRepairOrderIntake(
+    id: number,
+    input: UpdateRepairOrderInput,
+    user: { id: number; role: string }
+  ) {
+    if (input.symptomIds) {
+      const uniqueIds = Array.from(new Set(input.symptomIds));
+      const existing = await prisma.symptom.count({ where: { id: { in: uniqueIds } } });
+      if (existing !== uniqueIds.length) {
+        throw new AppError(400, 'One or more symptom IDs do not exist in the database');
+      }
+    }
+
+    if (input.paperReceiptNo) {
+      const duplicate = await prisma.repairOrder.findFirst({
+        where: { paperReceiptNo: input.paperReceiptNo, id: { not: id } },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw paperReceiptConflict(input.paperReceiptNo);
+      }
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        const order = await tx.repairOrder.findUnique({
+          where: { id },
+          include: { customer: true, machine: true, symptoms: true },
+        });
+
+        if (!order) {
+          throw new AppError(404, 'Repair order not found');
+        }
+        if (CLOSED_STATUSES.includes(order.status)) {
+          throw new AppError(409, `Cannot edit intake data of a ${order.status} repair order`);
+        }
+
+        const changedFields: string[] = [];
+        const orderData: Prisma.RepairOrderUpdateManyMutationInput = {};
+
+        // --- Simple scalar fields
+        const scalarFields = [
+          'paperBookNo',
+          'paperReceiptNo',
+          'otherSymptom',
+          'warrantyStatus',
+          'billingType',
+          'loanerMachine',
+          'loanerNote',
+          'warningNote',
+        ] as const;
+        for (const field of scalarFields) {
+          if (!(field in input)) continue;
+          const next = (input as any)[field] ?? null;
+          if (next !== ((order as any)[field] ?? null)) {
+            (orderData as any)[field] = next;
+            changedFields.push(field);
+          }
+        }
+
+        // --- Date-only fields
+        for (const field of ['receivedDate', 'warrantyExpiryDate'] as const) {
+          if (!(field in input)) continue;
+          const next = (input as any)[field] as string | null;
+          if (field === 'receivedDate' && next === null) continue; // receivedDate is NOT NULL
+          if (next !== dateOnlyString((order as any)[field])) {
+            (orderData as any)[field] = next ? dateOnlyToDate(next) : null;
+            changedFields.push(field);
+          }
+        }
+
+        // --- JSON fields
+        for (const field of ['accessories', 'careAdvice'] as const) {
+          if (!(field in input)) continue;
+          const next = (input as any)[field];
+          if (canonicalJson(next) !== canonicalJson((order as any)[field])) {
+            (orderData as any)[field] = jsonWrite(next);
+            changedFields.push(field);
+          }
+        }
+
+        // --- Warranty consistency is checked on the merged (stored + edited) values
+        const mergedWarrantyStatus = 'warrantyStatus' in input ? input.warrantyStatus : order.warrantyStatus;
+        const mergedExpiry = 'warrantyExpiryDate' in input ? input.warrantyExpiryDate : order.warrantyExpiryDate;
+        const warrantyError = warrantyConsistencyError(mergedWarrantyStatus, mergedExpiry);
+        if (warrantyError) {
+          throw new AppError(400, warrantyError);
+        }
+
+        // --- Customer (name / address only; phone is the customer identity and cannot change here)
+        const customerData: Prisma.CustomerUpdateInput = {};
+        if (input.customer) {
+          if (input.customer.name !== undefined && input.customer.name !== order.customer.name) {
+            customerData.name = input.customer.name;
+            changedFields.push('customer.name');
+          }
+          if ('address' in input.customer && (input.customer.address ?? null) !== (order.customer.address ?? null)) {
+            customerData.address = input.customer.address ?? null;
+            changedFields.push('customer.address');
+          }
+        }
+
+        // --- Machine
+        const machineData: Prisma.MachineUpdateInput = {};
+        if (input.machine) {
+          for (const field of ['brand', 'model', 'serialNumber'] as const) {
+            if (!(field in input.machine)) continue;
+            const next = (input.machine as any)[field] ?? null;
+            if (next !== ((order.machine as any)[field] ?? null)) {
+              (machineData as any)[field] = next;
+              changedFields.push(`machine.${field}`);
+            }
+          }
+        }
+
+        // --- Symptoms
+        let nextSymptomIds: number[] | null = null;
+        if (input.symptomIds) {
+          const next = Array.from(new Set(input.symptomIds)).sort((a, b) => a - b);
+          const current = order.symptoms.map((s) => s.symptomId).sort((a, b) => a - b);
+          if (next.join(',') !== current.join(',')) {
+            nextSymptomIds = next;
+            changedFields.push('symptomIds');
+          }
+        }
+
+        if (changedFields.length === 0) {
+          return; // nothing to change: no writes, no log
+        }
+
+        // Conditional write: fails if the order was closed concurrently
+        const guarded = await tx.repairOrder.updateMany({
+          where: { id, status: { notIn: CLOSED_STATUSES } },
+          data: { ...orderData, updatedAt: new Date() },
+        });
+        if (guarded.count === 0) {
+          throw new AppError(409, 'Repair order was closed or changed concurrently; intake data was not updated');
+        }
+
+        if (Object.keys(customerData).length > 0) {
+          await tx.customer.update({ where: { id: order.customerId }, data: customerData });
+        }
+        if (Object.keys(machineData).length > 0) {
+          await tx.machine.update({ where: { id: order.machineId }, data: machineData });
+        }
+        if (nextSymptomIds) {
+          await tx.repairOrderSymptom.deleteMany({ where: { repairOrderId: id } });
+          await tx.repairOrderSymptom.createMany({
+            data: nextSymptomIds.map((symptomId) => ({ repairOrderId: id, symptomId })),
+          });
+        }
+
+        await tx.statusLog.create({
+          data: {
+            repairOrderId: id,
+            status: order.status,
+            changedById: user.id,
+            note: `Intake data edited by ${user.role}. Changed fields: ${changedFields.join(', ')}`,
+          },
+        });
+      });
+    } catch (err: any) {
+      if (input.paperReceiptNo && isUniqueViolationOn(err, 'paperReceiptNo')) {
+        throw paperReceiptConflict(input.paperReceiptNo);
+      }
+      throw err;
+    }
+
+    return RepairService.getRepairOrderById(id, user);
+  }
+
   static async addRepairItem(
     repairOrderId: number,
-    data: { name: string; price: number; technicianId: number }
+    data: AddRepairItemInput & { technicianId: number }
   ) {
+    const unitPrice = new Prisma.Decimal(data.unitPrice.toFixed(2));
+
     const { order, item } = await prisma.$transaction(async (tx) => {
       const existingOrder = await tx.repairOrder.findUnique({
         where: { id: repairOrderId },
@@ -193,15 +444,18 @@ export class RepairService {
         data: {
           repairOrderId,
           name: data.name.trim(),
-          unitPrice: new Prisma.Decimal(data.price.toFixed(2)),
+          quantity: data.quantity,
+          unitPrice,
+          barcode: data.barcode ?? null,
+          itemType: data.itemType,
           status: 'PENDING',
         },
       });
 
-      // 2. Set order status to WAITING_APPROVAL
+      // 2. Set order status to WAITING_APPROVAL (adding an item counts as activity, SRS 3.6)
       const updatedOrder = await tx.repairOrder.update({
         where: { id: repairOrderId },
-        data: { status: 'WAITING_APPROVAL' },
+        data: { status: 'WAITING_APPROVAL', lastActivityAt: new Date() },
       });
 
       // 3. Log the status transition
@@ -210,12 +464,14 @@ export class RepairService {
           repairOrderId,
           status: 'WAITING_APPROVAL',
           changedById: data.technicianId,
-          note: `Added quotation item: ${data.name.trim()} (${data.price.toFixed(2)} THB)`,
+          note: `Added quotation item (${data.itemType}): ${data.name.trim()} x${data.quantity} @ ${unitPrice.toFixed(2)} THB`,
         },
       });
 
       return { order: updatedOrder, item: createdItem };
     });
+
+    const itemView = toRepairItemView(item);
 
     // Broadcast SSE strictly post-commit (exclude sensitive technician/customer IDs)
     SseService.broadcastUpdate(order.trackingToken, {
@@ -225,7 +481,7 @@ export class RepairService {
       newItem: {
         id: item.id,
         name: item.name,
-        price: item.unitPrice.toString(),
+        price: itemView.unitPrice,
         status: item.status,
       },
       updatedAt: order.updatedAt.toISOString(),
@@ -234,11 +490,11 @@ export class RepairService {
     // Send push notification to LINE customer with approval actions
     LineWebhookService.notifyCustomerNewItem(repairOrderId, {
       id: item.id,
-      name: item.name,
-      price: item.unitPrice.toString(),
+      name: item.quantity > 1 ? `${item.name} x${item.quantity}` : item.name,
+      price: itemView.amount,
     }).catch(() => {});
 
-    return { order, item: withLegacyPrice(item) };
+    return { order, item: itemView };
   }
 
   static async completeRepairItem(repairOrderId: number, itemId: number, userId: number) {
@@ -297,7 +553,7 @@ export class RepairService {
       updatedAt: new Date().toISOString(),
     });
 
-    return { order, item: withLegacyPrice(item) };
+    return { order, item: toRepairItemView(item) };
   }
 
   static async resolveRepairItem(
@@ -392,7 +648,7 @@ export class RepairService {
       updatedAt: order.updatedAt.toISOString(),
     });
 
-    return { item: withLegacyPrice(item), order };
+    return { item: toRepairItemView(item), order };
   }
 
   static async updateStatus(id: number, status: RepairStatus, userId: number, note?: string) {
@@ -560,14 +816,10 @@ export class RepairService {
 
     const conditions: Prisma.RepairOrderWhereInput[] = [];
 
-    // Technician role visibility constraint
+    // Technician role visibility (SRS 4): only orders assigned to this technician
+    // (including ones still waiting to be accepted). Unassigned NEW orders are NOT visible.
     if (params.role === 'TECHNICIAN') {
-      conditions.push({
-        OR: [
-          { technicianId: params.userId },
-          { status: 'NEW', technicianId: null },
-        ],
-      });
+      conditions.push({ technicianId: params.userId });
     }
 
     if (params.status) {
@@ -583,7 +835,10 @@ export class RepairService {
       conditions.push({
         OR: [
           { jobNumber: { contains: term } },
+          { paperReceiptNo: { contains: term } },
+          { paperBookNo: { contains: term } },
           { customer: { phone: { contains: term } } },
+          { customer: { name: { contains: term } } },
         ],
       });
     }
@@ -601,6 +856,11 @@ export class RepairService {
           id: true,
           jobNumber: true,
           status: true,
+          workType: true,
+          paperBookNo: true,
+          paperReceiptNo: true,
+          receivedDate: true,
+          warrantyStatus: true,
           createdAt: true,
           updatedAt: true,
           otherSymptom: true,
@@ -664,19 +924,16 @@ export class RepairService {
       throw new AppError(404, 'Repair order not found');
     }
 
-    // Role visibility check for technician
-    if (user.role === 'TECHNICIAN') {
-      const isAssigned = order.technicianId === user.id;
-      const isUnassignedNew = order.status === 'NEW' && order.technicianId === null;
-      if (!isAssigned && !isUnassignedNew) {
-        throw new AppError(403, 'Forbidden: You do not have permission to view this repair order');
-      }
+    // Role visibility check for technician (SRS 4): only their own assigned orders
+    if (user.role === 'TECHNICIAN' && order.technicianId !== user.id) {
+      throw new AppError(403, 'Forbidden: You do not have permission to view this repair order');
     }
 
     // trackingToken redaction for TECHNICIAN is applied centrally in the controller (sanitizeForRole)
     return withPublicCustomer({
       ...order,
-      repairItems: order.repairItems.map(withLegacyPrice),
+      repairItems: order.repairItems.map(toRepairItemView),
+      totalAmount: computeTotalAmount(order.repairItems),
     });
   }
 }

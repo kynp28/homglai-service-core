@@ -3,6 +3,7 @@ import prisma from '@homglai/db';
 import { RepairService } from '../services/repair.service';
 import {
   createRepairOrderSchema,
+  updateRepairOrderSchema,
   addRepairItemSchema,
   resolveRepairItemSchema,
   updateRepairStatusSchema,
@@ -18,10 +19,7 @@ export class RepairController {
       const validatedData = createRepairOrderSchema.parse(req.body);
 
       const repairOrder = await RepairService.createRepairOrder({
-        customer: validatedData.customer,
-        machine: validatedData.machine,
-        symptomIds: validatedData.symptomIds,
-        otherSymptom: validatedData.otherSymptom,
+        ...validatedData,
         receptionistId,
       });
 
@@ -32,6 +30,26 @@ export class RepairController {
   }
 
   static create = RepairController.createRepair;
+
+  /** PATCH /api/repairs/:id — edit intake data (RECEPTIONIST/ADMIN, enforced by route). */
+  static async updateRepair(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+
+      const validatedData = updateRepairOrderSchema.parse(req.body);
+      const order = await RepairService.updateRepairOrderIntake(id, validatedData, {
+        id: req.user!.employeeId,
+        role: req.user!.role,
+      });
+
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
 
   static async addItem(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -60,8 +78,7 @@ export class RepairController {
       }
 
       const result = await RepairService.addRepairItem(repairOrderId, {
-        name: validatedData.name,
-        price: validatedData.price,
+        ...validatedData,
         technicianId,
       });
 

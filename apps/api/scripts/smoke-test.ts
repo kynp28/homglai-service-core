@@ -877,7 +877,7 @@ async function runSmokeTests() {
   if (tech1OrderIds.includes(tech2Order.id)) {
     throw new Error('Security flaw: Technician 1 can see Technician 2 assigned order in list!');
   }
-  console.log('Positive passed: Technician list visibility strictly restricted to own assigned jobs + NEW jobs.');
+  console.log('Positive passed: Technician list visibility strictly restricted to own assigned jobs (no unassigned NEW jobs).');
 
   // 13.6 GET /api/repairs/:id Details & Relations
   const detailAdmin = await axios.get(`${API_BASE}/repairs/${order.id}`, { headers: adminHeaders });

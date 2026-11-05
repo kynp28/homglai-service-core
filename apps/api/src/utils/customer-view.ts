@@ -8,6 +8,7 @@ export const customerResponseSelect = {
   id: true,
   name: true,
   phone: true,
+  address: true,
   createdAt: true,
   lineUserId: true,
 } satisfies Prisma.CustomerSelect;
