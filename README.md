@@ -191,6 +191,9 @@ pnpm --filter @homglai/api create-admin
 | `POST` | `/api/repairs/:id/complete` | ช่างที่ได้รับจ่าย, `ADMIN` | ส่งงานซ่อม (`REPAIRING` → `COMPLETED`) พร้อม `completionSummary` และเลือก `helperTechnicianIds` (ช่างผู้ช่วย ไม่บังคับ) ช่างกลับว่างและรับงานถัดไป; `outcome: NOT_REPAIRED` = ลูกค้าไม่ซ่อม ปิดได้จาก `INSPECTING`/`REPAIRING` แล้วส่งมอบคืนตามปกติ |
 | `POST` | `/api/repairs/:id/still-working` | ช่างที่ได้รับจ่าย, `ADMIN` | ปุ่ม "ยังซ่อมอยู่" รีเซ็ตตัวจับเวลาเตือนความคืบหน้า |
 | `PUT` | `/api/repairs/:id/helpers` | `RECEPTIONIST`, `ADMIN` | แก้รายชื่อช่างผู้ช่วยของใบงาน (บันทึกไว้ดูอย่างเดียว) จนกว่าจะส่งมอบ/ยกเลิก |
+| `POST` | `/api/repairs/:id/images` | ตามประเภทรูป | อัปโหลดรูป (multipart: `files` หลายไฟล์ + `kind`) `INTAKE`/`RECEIPT_PAPER` = หน้าร้าน/แอดมิน, `DELIVERY`/`OTHER` = ช่างเจ้าของงาน/หน้าร้าน/แอดมิน รับเฉพาะ JPEG/PNG/WebP (ตรวจจากเนื้อไฟล์, HEIC → 415) ตัด EXIF/GPS ย่อด้านยาว ≤ `IMAGE_MAX_LONG_EDGE` เก็บเป็น JPEG ≤ `IMAGE_MAX_PER_KIND` รูปต่อประเภท ไฟล์เกิน `IMAGE_MAX_BYTES` → 413 |
+| `GET` | `/api/repairs/:id/images` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | รายการรูป (`id`, `kind`, `uploadedBy`, `createdAt`) ไม่มี path ของไฟล์ |
+| `GET` | `/api/repairs/:id/images/:imageId` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | ดาวน์โหลดรูป (`image/jpeg`, `Cache-Control: private, no-store`) รูปต้องเป็นของใบงานนั้น ไม่มีลิงก์สาธารณะ |
 | `PUT` | `/api/repairs/:id/payment` | `RECEPTIONIST`, `ADMIN` | บันทึก/แก้ไขการรับเงิน (`amount`, `method` CASH/TRANSFER/OTHER, `note`) ของงาน `COMPLETED`/`DELIVERED` บันทึกอย่างเดียว ไม่บังคับ; ส่งพร้อม `PATCH /status` → `DELIVERED` ได้ด้วยฟิลด์ `payment` ระบบเตือน (ไม่บล็อก) ถ้ายังไม่บันทึกหรือยอดไม่ตรงกับยอดที่ต้องชำระ (รายการ APPROVED+COMPLETED) |
 | `GET` | `/api/holidays` | ทุก Role | รายการวันหยุดพิเศษของร้าน (`from`, `to`) วันเหล่านี้ไม่นับเวลาเตือน |
 | `POST` | `/api/holidays` | `ADMIN` | เพิ่มวันหยุดพิเศษ 1 วัน หรือช่วงติดกัน (`date`, `toDate` ≤31 วัน, `name`) วันที่ซ้ำตอบ 409 |
@@ -366,3 +369,12 @@ stateDiagram-v2
 2. **การชนกันของเลขที่ใบสั่งซ่อมและการข้ามลำดับ Sequence ขณะเปิดงานพร้อมกัน (Concurrency Collision):**
    * ในการทดสอบเปิดใบสั่งซ่อมพร้อมกันจำนวนมากในเสี้ยววินาทีเดียวกัน (`test:concurrency`) จะมีข้อความแจ้งเตือน `Unique constraint failed on the constraint: RepairOrder_jobNumber_key` ปรากฏในคอนโซล
    * **พฤติกรรมนี้เป็นกลไกที่ถูกต้องของระบบ:** เนื่องจากระบบใช้หมายเลขใบงานรูปแบบ `REP-YYMM-XXXX` ซึ่งคำนวณจาก Sequence สูงสุดในขณะนั้น เมื่อเกิดคำขอพร้อมกัน Prisma Transaction จะตรวจพบการชนกัน และกลไก Retry Loop ใน `RepairService.createRepairOrder` จะทำการ Rollback และคำนวณ Sequence ถัดไปใหม่อัตโนมัติจนสำเร็จครบทุกรายการ (ผลลัพธ์คือทุกงานได้รับ Job Number ที่ไม่ซ้ำกันอย่างถูกต้อง แต่อาจมีหมายเลข Sequence บางลำดับถูกข้ามไปอันเนื่องมาจากการ Rollback)
+
+## รูปถ่ายใบงาน (Phase 7, SRS 2.3)
+
+* รูปเก็บที่โฟลเดอร์ `IMAGE_STORAGE_DIR` (ค่าเริ่มต้น `apps/api/data/uploads`) โดยฐานข้อมูลเก็บเฉพาะ path แบบ relative และไม่มี API ใดส่ง path นี้ออกไป รูปไม่มี static serving ไม่อยู่ในหน้าค้นหาสาธารณะหรือ SSE
+* **ตอน deploy โฟลเดอร์รูปต้องเป็นโวลุ่ม (volume) แยกจาก container** ไม่อย่างนั้นรูปจะหายเมื่อสร้าง container ใหม่ และโฟลเดอร์นี้ถูก ignore จาก git
+* ระบบลบรูปอัตโนมัติเมื่อใบงานปิด (ส่งมอบ/ยกเลิก) ครบ `IMAGE_RETENTION_DAYS` วัน (ค่าเริ่มต้น 30 วัน นับจาก `closedAt` ไม่ใช่วันอัปโหลด) ใบงานที่ยังเปิดอยู่ไม่ถูกลบ ฟังก์ชัน `purgeExpiredImages` ถูกตั้งเวลาให้ทำงานใน Phase 8
+* **ไฟล์สำรอง (backup) ของโฟลเดอร์รูปต้องไม่เก็บไว้นานกว่าระยะเก็บเดียวกัน** (30 วันหลังปิดงาน) เพื่อให้เป็นไปตาม PDPA
+* หลังรูปถูกลบแล้ว **จะไม่มีรูปสภาพเครื่องไว้พิสูจน์ย้อนหลัง** ใบกระดาษยังเป็นหลักฐานหลักของร้าน
+* ระบบใช้ `multer` (รับไฟล์ในหน่วยความจำ) และ `sharp` (ตรวจชนิดไฟล์จากเนื้อจริง หมุนตาม EXIF ตัด metadata ย่อรูป และกันรูปที่ใหญ่ผิดปกติเกิน 50 ล้านพิกเซล)

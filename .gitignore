@@ -37,3 +37,7 @@ Thumbs.db
 *.ntvs*
 *.njsproj
 *.sln
+
+# Uploaded repair photos (IMAGE_STORAGE_DIR) — never commit customer images
+apps/api/data/
+data/

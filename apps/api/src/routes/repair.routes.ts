@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { RepairController } from '../controllers/repair.controller';
 import { authenticate, requireRole } from '../middlewares/auth.middleware';
+import { uploadImages } from '../middlewares/upload.middleware';
+import { ImageController } from '../controllers/image.controller';
 
 const router = Router();
 
@@ -531,6 +533,94 @@ router.put('/:id/helpers', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), R
  *         description: Order is not COMPLETED or DELIVERED
  */
 router.put('/:id/payment', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairController.setPayment);
+
+/**
+ * @openapi
+ * /api/repairs/{id}/images:
+ *   post:
+ *     summary: Upload photos of a repair order (multipart)
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       multipart/form-data: field "files" (1..IMAGE_MAX_PER_KIND files) and field "kind".
+ *       INTAKE / RECEIPT_PAPER: RECEPTIONIST, ADMIN. DELIVERY / OTHER: the assigned TECHNICIAN, RECEPTIONIST, ADMIN.
+ *       The file content is checked (JPEG, PNG or WebP only; HEIC/HEIF -> 415), auto-rotated, all EXIF/GPS metadata
+ *       removed, shrunk to IMAGE_MAX_LONG_EDGE and stored as JPEG. At most IMAGE_MAX_PER_KIND images per kind per order
+ *       (409). Not allowed on DELIVERED/CANCELLED orders (409). Images are never public. Returns the image list.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [files, kind]
+ *             properties:
+ *               kind: { type: string, enum: [INTAKE, RECEIPT_PAPER, DELIVERY, OTHER] }
+ *               files:
+ *                 type: array
+ *                 items: { type: string, format: binary }
+ *     responses:
+ *       201:
+ *         description: "[{ id, kind, createdAt, uploadedBy: { id, name } }]"
+ *       400:
+ *         description: Missing files / invalid kind / too many files in one request
+ *       403:
+ *         description: Not allowed for this kind or not the assigned technician
+ *       409:
+ *         description: Per-kind limit reached or order closed
+ *       413:
+ *         description: A file is larger than IMAGE_MAX_BYTES
+ *       415:
+ *         description: Not a JPEG / PNG / WebP image
+ *   get:
+ *     summary: List photo metadata of a repair order
+ *     security:
+ *       - bearerAuth: []
+ *     description: ADMIN / RECEPTIONIST any order; TECHNICIAN only their own. No storage paths are returned.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: "[{ id, kind, createdAt, uploadedBy: { id, name } }]"
+ */
+router.post('/:id/images', authenticate, uploadImages, ImageController.upload);
+router.get('/:id/images', authenticate, ImageController.list);
+
+/**
+ * @openapi
+ * /api/repairs/{id}/images/{imageId}:
+ *   get:
+ *     summary: Download one photo (image/jpeg)
+ *     security:
+ *       - bearerAuth: []
+ *     description: Same visibility as the list. The image must belong to this order. Cache-Control private, no-store.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: path
+ *         name: imageId
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: JPEG bytes
+ *         content:
+ *           image/jpeg:
+ *             schema: { type: string, format: binary }
+ *       404:
+ *         description: Not found, not of this order, or the file is gone
+ */
+router.get('/:id/images/:imageId', authenticate, ImageController.download);
 
 /**
  * @openapi
