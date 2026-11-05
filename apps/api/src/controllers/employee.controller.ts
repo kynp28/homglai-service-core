@@ -7,6 +7,7 @@ import {
   updateEmployeeStatusSchema,
 } from '../validators/employee.validator';
 import { AppError } from '../utils/app-error';
+import { sanitizeForRole } from '../utils/response-sanitizer';
 
 export class EmployeeController {
   static async create(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -72,7 +73,7 @@ export class EmployeeController {
       }
 
       const result = await EmployeeService.updateStatusAndAssignWork(id, status);
-      res.status(200).json({ status: 'success', data: result });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);
     }

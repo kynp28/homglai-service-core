@@ -2,6 +2,7 @@ import prisma, { EmployeeRole } from '@homglai/db';
 import bcrypt from 'bcryptjs';
 import { AppError } from '../utils/app-error';
 import { AssignmentService } from './assignment.service';
+import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
 
 export class EmployeeService {
   static async createEmployee(data: {
@@ -194,7 +195,7 @@ export class EmployeeService {
         technicianId: employeeId,
         status: 'INSPECTING',
       },
-      include: { customer: true, machine: true },
+      include: { customer: { select: customerResponseSelect }, machine: true },
       orderBy: { updatedAt: 'desc' },
     });
 
@@ -212,6 +213,9 @@ export class EmployeeService {
       },
     });
 
-    return { employee: currentEmployee || updatedEmployee, assignedOrder };
+    return {
+      employee: currentEmployee || updatedEmployee,
+      assignedOrder: assignedOrder ? withPublicCustomer(assignedOrder) : null,
+    };
   }
 }

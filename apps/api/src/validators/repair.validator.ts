@@ -66,3 +66,41 @@ export const updateRepairStatusSchema = z.object({
   }),
   note: z.string().trim().optional(),
 });
+
+export const getRepairsQuerySchema = z.object({
+  status: z
+    .preprocess(
+      (val) => (val === '' ? undefined : val),
+      z.enum([
+        'NEW',
+        'INSPECTING',
+        'WAITING_APPROVAL',
+        'REPAIRING',
+        'COMPLETED',
+        'DELIVERED',
+        'CANCELLED',
+      ], {
+        errorMap: () => ({ message: 'Invalid repair order status filter' }),
+      }).optional()
+    ),
+  technicianId: z
+    .preprocess(
+      (val) => (val === '' ? undefined : val),
+      z.coerce.number().int().positive('technicianId must be a positive integer').optional()
+    ),
+  search: z
+    .string()
+    .trim()
+    .max(100, 'Search query cannot exceed 100 characters')
+    .optional(),
+  page: z
+    .preprocess(
+      (val) => (val === '' ? undefined : val),
+      z.coerce.number().int().positive('page must be a positive integer').optional().default(1)
+    ),
+  limit: z
+    .preprocess(
+      (val) => (val === '' ? undefined : val),
+      z.coerce.number().int().min(1).max(100, 'limit must be between 1 and 100').optional().default(20)
+    ),
+});

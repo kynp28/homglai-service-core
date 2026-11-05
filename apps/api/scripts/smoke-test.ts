@@ -11,6 +11,38 @@ function signLineWebhook(body: any, secret: string = LINE_SECRET): string {
   return crypto.createHmac('sha256', secret).update(payload).digest('base64');
 }
 
+function hasKeyDeep(obj: any, key: string): boolean {
+  if (obj === null || typeof obj !== 'object') return false;
+  if (Array.isArray(obj)) {
+    return obj.some((item) => hasKeyDeep(item, key));
+  }
+  if (key in obj) return true;
+  for (const v of Object.values(obj)) {
+    if (hasKeyDeep(v, key)) return true;
+  }
+  return false;
+}
+
+function assertNoTrackingToken(label: string, payload: any) {
+  if (hasKeyDeep(payload, 'trackingToken')) {
+    throw new Error(`Security flaw: trackingToken leaked in ${label}`);
+  }
+}
+
+function assertCustomerPrivacy(label: string, customer: any, expectedLinked: boolean) {
+  if (!customer) {
+    throw new Error(`Expected customer object in ${label}`);
+  }
+  if ('lineUserId' in customer) {
+    throw new Error(`Security flaw: customer.lineUserId leaked in ${label}`);
+  }
+  if (customer.lineLinked !== expectedLinked) {
+    throw new Error(
+      `Expected customer.lineLinked === ${expectedLinked} in ${label}, got: ${customer.lineLinked}`
+    );
+  }
+}
+
 async function runSmokeTests() {
   assertSafeDatabaseUrl();
 
@@ -180,7 +212,10 @@ async function runSmokeTests() {
     throw new Error('Expected 401 logging into deactivated account');
   } catch (err: any) {
     if (err.response?.status !== 401) throw err;
-    console.log('Negative passed: Login with deactivated employee returned 401.');
+    if (err.response?.data?.message !== 'Invalid username or password') {
+      throw new Error(`Expected message 'Invalid username or password', got: ${err.response?.data?.message}`);
+    }
+    console.log('Negative passed: Login with deactivated employee returned 401 with generic message.');
   }
 
   // 4.2 Dummy compare / Timing attack check for non-existent user
@@ -323,6 +358,7 @@ async function runSmokeTests() {
   );
 
   const order = intakeRes.data.data;
+  assertCustomerPrivacy('POST /api/repairs (Intake)', order.customer, false);
   console.log(`Repair Order created: ${order.jobNumber} (ID: ${order.id})`);
   console.log(`Assigned technician: ${order.technician ? order.technician.name : 'None'} (Status: ${order.status})`);
 
@@ -546,11 +582,15 @@ async function runSmokeTests() {
   console.log(`Item successfully marked as COMPLETED.`);
 
   // Now transition order to COMPLETED -> succeeds!
-  await axios.patch(
+  const adminCompletedRes = await axios.patch(
     `${API_BASE}/repairs/${order.id}/status`,
     { status: 'COMPLETED' },
     { headers: adminHeaders }
   );
+  assertCustomerPrivacy('PATCH /api/repairs/:id/status (Admin)', adminCompletedRes.data.data.customer, false);
+  if (!adminCompletedRes.data.data.trackingToken) {
+    throw new Error('Expected trackingToken for ADMIN on PATCH /api/repairs/:id/status');
+  }
   console.log('Order transitioned to COMPLETED successfully.');
 
   // -------------------------------------------------------------------
@@ -783,6 +823,24 @@ async function runSmokeTests() {
   if (typeof listAdmin.data.data.total !== 'number' || !Array.isArray(listAdmin.data.data.orders)) {
     throw new Error('Invalid structure for GET /api/repairs');
   }
+
+  // Negative: Invalid status filter -> 400 Bad Request
+  try {
+    await axios.get(`${API_BASE}/repairs?status=INVALID_STATUS`, { headers: adminHeaders });
+    throw new Error('Expected 400 for invalid status query');
+  } catch (err: any) {
+    if (err.response?.status !== 400) throw err;
+    console.log('Negative passed: Invalid status filter rejected with 400 Bad Request.');
+  }
+
+  // Negative: Search query exceeding 100 characters -> 400 Bad Request
+  try {
+    await axios.get(`${API_BASE}/repairs?search=${'a'.repeat(101)}`, { headers: adminHeaders });
+    throw new Error('Expected 400 for search query > 100 characters');
+  } catch (err: any) {
+    if (err.response?.status !== 400) throw err;
+    console.log('Negative passed: Search query exceeding 100 characters rejected with 400 Bad Request.');
+  }
   // Assert no passwordHash or trackingToken in list items
   for (const o of listAdmin.data.data.orders) {
     if ((o as any).passwordHash || (o.technician && (o.technician as any).passwordHash)) {
@@ -825,6 +883,16 @@ async function runSmokeTests() {
   if (!detailAdmin.data.data.customer || !detailAdmin.data.data.machine || !detailAdmin.data.data.statusLogs) {
     throw new Error('Missing relations in GET /api/repairs/:id');
   }
+  assertCustomerPrivacy('GET /api/repairs/:id (Admin)', detailAdmin.data.data.customer, true);
+  if (!detailAdmin.data.data.trackingToken) {
+    throw new Error('Expected trackingToken for ADMIN on GET /api/repairs/:id');
+  }
+
+  const detailRecep = await axios.get(`${API_BASE}/repairs/${order.id}`, { headers: recepHeaders });
+  assertCustomerPrivacy('GET /api/repairs/:id (Receptionist)', detailRecep.data.data.customer, true);
+  if (!detailRecep.data.data.trackingToken) {
+    throw new Error('Expected trackingToken for RECEPTIONIST on GET /api/repairs/:id');
+  }
   console.log('Positive passed: GET /api/repairs/:id includes customer, machine, symptoms, items, and statusLogs.');
 
   // 13.7 RBAC: Technician viewing another technician\'s order -> 403 Forbidden
@@ -841,13 +909,132 @@ async function runSmokeTests() {
   if (tech2View.status !== 200) {
     throw new Error('Expected 200 when Technician views own order');
   }
-  if (tech2View.data.data.trackingToken) {
-    throw new Error('Security flaw: trackingToken leaked to technician in GET /api/repairs/:id');
-  }
+  assertCustomerPrivacy('GET /api/repairs/:id (Technician)', tech2View.data.data.customer, true);
+  assertNoTrackingToken('GET /api/repairs/:id (Technician)', tech2View.data.data);
   console.log('Positive passed: Technician viewing own order succeeds with trackingToken safely hidden.');
 
   // Cleanup tech2Order
   await prisma.repairOrder.delete({ where: { id: tech2Order.id } });
+
+  // -------------------------------------------------------------------
+  // 14. Customer Privacy & Role-based Redaction Verification
+  // -------------------------------------------------------------------
+  console.log('\n[Test 14] Customer Privacy & Role-based Redaction Verification...');
+
+  // Set all technicians to BUSY so next order goes into NEW queue
+  await prisma.employee.updateMany({
+    where: { role: 'TECHNICIAN' },
+    data: { status: 'BUSY' },
+  });
+
+  // Create a new order while technicians are BUSY -> order stays NEW
+  const privacyCustPhone = `088${Math.floor(1000000 + Math.random() * 9000000)}`;
+  const privacyOrderRes = await axios.post(
+    `${API_BASE}/repairs`,
+    {
+      customer: { name: 'Privacy Test Customer', phone: privacyCustPhone },
+      machine: { brand: 'Rocket', model: 'Apartamento', serialNumber: `SN-PRIV-${Date.now()}` },
+      symptomIds: [1],
+    },
+    { headers: recepHeaders }
+  );
+  const privacyOrder = privacyOrderRes.data.data;
+  assertCustomerPrivacy('POST /api/repairs', privacyOrder.customer, false);
+  if (!privacyOrder.trackingToken) {
+    throw new Error('Expected trackingToken for Receptionist on POST /api/repairs');
+  }
+
+  // 14.1 Endpoint 1: PATCH /api/employees/:id/status (Technician gets assignedOrder)
+  // Tech 1 becomes AVAILABLE -> triggers auto-assignment of the NEW order
+  const tech1StatusRes = await axios.patch(
+    `${API_BASE}/employees/3/status`,
+    { status: 'AVAILABLE' },
+    { headers: tech1Headers }
+  );
+  const tech1StatusData = tech1StatusRes.data.data;
+  if (!tech1StatusData.assignedOrder || tech1StatusData.assignedOrder.id !== privacyOrder.id) {
+    throw new Error('Expected assignedOrder to be assigned to Tech 1 upon becoming AVAILABLE');
+  }
+  assertCustomerPrivacy('PATCH /api/employees/:id/status (assignedOrder)', tech1StatusData.assignedOrder.customer, false);
+  assertNoTrackingToken('PATCH /api/employees/:id/status (Technician)', tech1StatusData);
+  console.log('Positive passed: PATCH /api/employees/:id/status omits trackingToken deeply and protects customer privacy.');
+
+  // 14.2 Endpoint 2: POST /api/repairs/:id/items (Technician adds item)
+  const techAddItemRes = await axios.post(
+    `${API_BASE}/repairs/${privacyOrder.id}/items`,
+    { name: 'Solenoid Valve', price: 950 },
+    { headers: tech1Headers }
+  );
+  assertNoTrackingToken('POST /api/repairs/:id/items (Technician)', techAddItemRes.data.data);
+  const privacyItemId = techAddItemRes.data.data.item.id;
+  console.log('Positive passed: POST /api/repairs/:id/items omits trackingToken deeply for Technician.');
+
+  // Admin approves the item -> order returns to REPAIRING
+  await axios.patch(
+    `${API_BASE}/repairs/${privacyOrder.id}/items/${privacyItemId}/status`,
+    { status: 'APPROVED' },
+    { headers: adminHeaders }
+  );
+
+  // 14.3 Endpoint 3: PATCH /api/repairs/:id/items/:itemId/complete (Technician completes item)
+  const techCompleteItemRes = await axios.patch(
+    `${API_BASE}/repairs/${privacyOrder.id}/items/${privacyItemId}/complete`,
+    {},
+    { headers: tech1Headers }
+  );
+  assertNoTrackingToken('PATCH /api/repairs/:id/items/:itemId/complete (Technician)', techCompleteItemRes.data.data);
+  console.log('Positive passed: PATCH /api/repairs/:id/items/:itemId/complete omits trackingToken deeply for Technician.');
+
+  // 14.4 Endpoint 4: PATCH /api/repairs/:id/status (Technician completes order)
+  const techCompleteOrderRes = await axios.patch(
+    `${API_BASE}/repairs/${privacyOrder.id}/status`,
+    { status: 'COMPLETED' },
+    { headers: tech1Headers }
+  );
+  assertCustomerPrivacy('PATCH /api/repairs/:id/status (Technician)', techCompleteOrderRes.data.data.customer, false);
+  assertNoTrackingToken('PATCH /api/repairs/:id/status (Technician)', techCompleteOrderRes.data.data);
+  console.log('Positive passed: PATCH /api/repairs/:id/status omits trackingToken deeply for Technician.');
+
+  // 14.5 Admin transitions status -> ADMIN still receives trackingToken
+  const adminReworkRes = await axios.patch(
+    `${API_BASE}/repairs/${privacyOrder.id}/status`,
+    { status: 'REPAIRING', note: 'Admin rework check' },
+    { headers: adminHeaders }
+  );
+  assertCustomerPrivacy('PATCH /api/repairs/:id/status (Admin)', adminReworkRes.data.data.customer, false);
+  if (!adminReworkRes.data.data.trackingToken) {
+    throw new Error('Security flaw: trackingToken was unexpectedly omitted for ADMIN on PATCH /api/repairs/:id/status');
+  }
+  console.log('Positive passed: ADMIN retains trackingToken on PATCH /api/repairs/:id/status.');
+
+  // 14.6 Link customer LINE and test GET /api/repairs/:id across 3 roles
+  await prisma.customer.update({
+    where: { id: privacyOrder.customerId },
+    data: { lineUserId: 'U_PRIVACY_LINE_USER_123' },
+  });
+
+  const getAdminPrivacy = await axios.get(`${API_BASE}/repairs/${privacyOrder.id}`, { headers: adminHeaders });
+  assertCustomerPrivacy('GET /api/repairs/:id (Admin)', getAdminPrivacy.data.data.customer, true);
+  if (!getAdminPrivacy.data.data.trackingToken) {
+    throw new Error('Expected trackingToken for ADMIN on GET /api/repairs/:id');
+  }
+
+  const getRecepPrivacy = await axios.get(`${API_BASE}/repairs/${privacyOrder.id}`, { headers: recepHeaders });
+  assertCustomerPrivacy('GET /api/repairs/:id (Receptionist)', getRecepPrivacy.data.data.customer, true);
+  if (!getRecepPrivacy.data.data.trackingToken) {
+    throw new Error('Expected trackingToken for RECEPTIONIST on GET /api/repairs/:id');
+  }
+
+  const getTechPrivacy = await axios.get(`${API_BASE}/repairs/${privacyOrder.id}`, { headers: tech1Headers });
+  assertCustomerPrivacy('GET /api/repairs/:id (Technician)', getTechPrivacy.data.data.customer, true);
+  assertNoTrackingToken('GET /api/repairs/:id (Technician)', getTechPrivacy.data.data);
+  console.log('Positive passed: GET /api/repairs/:id verified for Admin, Receptionist, Technician (no lineUserId, correct lineLinked, trackingToken restricted to Admin/Receptionist).');
+
+  // Reset tech status
+  await prisma.employee.updateMany({
+    where: { role: 'TECHNICIAN' },
+    data: { status: 'AVAILABLE' },
+  });
 
   console.log('\n========================================================');
   console.log('ALL E2E SMOKE TESTS COMPLETED WITH 100% SUCCESS!');
