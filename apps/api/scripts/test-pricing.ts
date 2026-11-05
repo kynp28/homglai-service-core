@@ -168,7 +168,8 @@ async function main() {
     // 2. CUSTOMER_LINE_APPROVAL_ENABLED flag
     // ---------------------------------------------------------------
     console.log('\n[Test 2] LINE approval flag...');
-    await prisma.customer.update({ where: { id: customer.id }, data: { lineUserId: OWNER_LINE } });
+    // Phase 6: LINE accounts are linked per order
+    await prisma.orderLineSubscription.create({ data: { repairOrderId: O1.id, lineUserId: OWNER_LINE } });
     const i4 = (await addItem({ name: 'วาล์วนิรภัย', unitPrice: 480 })).data.data.item;
     eq((await order(O1.id)).status, 'WAITING_APPROVAL', 'new item -> WAITING_APPROVAL');
 

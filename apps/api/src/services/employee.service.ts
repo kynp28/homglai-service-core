@@ -2,7 +2,7 @@ import prisma, { EmployeeRole, Prisma } from '@homglai/db';
 import bcrypt from 'bcryptjs';
 import { AppError } from '../utils/app-error';
 import { AssignmentService, heldOrdersWhere, RequeuedOrder } from './assignment.service';
-import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
+import { customerResponseSelect, lineLinkCountInclude, withPublicCustomer } from '../utils/customer-view';
 
 export class EmployeeService {
   static async createEmployee(data: {
@@ -247,7 +247,8 @@ export class EmployeeService {
     // 5. The job this technician currently holds (a reserved job awaiting acceptance included)
     const assignedOrder = await prisma.repairOrder.findFirst({
       where: heldOrdersWhere(employeeId),
-      include: { customer: { select: customerResponseSelect }, machine: true },
+      include: { customer: { select: customerResponseSelect },
+        ...lineLinkCountInclude, machine: true },
       orderBy: [{ assignedAt: 'desc' }, { id: 'desc' }],
     });
 

@@ -98,6 +98,7 @@ const EXPECTED_MIGRATIONS: { dir: string; label: string }[] = [
   { dir: '20261105140000_srs_v2_schema_additions',            label: 'SRS v2 schema additions (3-step)' },
   { dir: '20261105170000_repair_order_helpers',                label: 'RepairOrderHelper table (additive)' },
   { dir: '20261105190000_shop_rules',                          label: 'Job-number counter, holidays, day off, outcome, payment (3-step)' },
+  { dir: '20261106090000_line_subscription_per_order',         label: 'LINE link per order, drop Customer.lineUserId (3-step)' },
 ];
 
 const migrationsRoot = path.resolve(__dirname, '../../../packages/db/prisma/migrations');
@@ -327,7 +328,8 @@ VALUES
   // -------------------------------------------------------------------
   console.log('[Step 4] SRS v2 migration (target of this test) + later additive migrations');
   applyMigration(3, LEGACY_DB);
-  for (let i = 4; i < EXPECTED_MIGRATIONS.length; i++) {
+  const lineMoveIndex = EXPECTED_MIGRATIONS.findIndex((m) => m.dir === '20261106090000_line_subscription_per_order');
+  for (let i = 4; i < lineMoveIndex; i++) {
     applyMigration(i, LEGACY_DB);
   }
   console.log('');
@@ -562,6 +564,59 @@ VALUES
   console.log(`  [PASS] All ${requiredIndexes.length} required indexes exist.`);
 
   console.log('\n[Step 5] All 14 assertion groups passed!\n');
+
+  // -------------------------------------------------------------------
+  // Step 6: Phase 6 — move Customer.lineUserId to OrderLineSubscription, then drop the column
+  // -------------------------------------------------------------------
+  console.log('[Step 6] LINE link per order migration (copy -> verify -> drop)');
+  // A subscription that already exists must be kept, not duplicated
+  runMysql("INSERT INTO `OrderLineSubscription` (`repairOrderId`, `lineUserId`) VALUES (1, 'U_line_a');", LEGACY_DB);
+  const customersBefore = count('Customer', LEGACY_DB);
+  const ordersNow = count('RepairOrder', LEGACY_DB);
+  const expectedLinks = queryScalar(
+    'SELECT COUNT(*) FROM `RepairOrder` ro JOIN `Customer` c ON c.`id` = ro.`customerId` WHERE c.`lineUserId` IS NOT NULL',
+    LEGACY_DB
+  );
+  const expectedPairs = queryScalar(
+    "SELECT GROUP_CONCAT(CONCAT(ro.`id`, ':', c.`lineUserId`) ORDER BY ro.`id`) FROM `RepairOrder` ro JOIN `Customer` c ON c.`id` = ro.`customerId` WHERE c.`lineUserId` IS NOT NULL",
+    LEGACY_DB
+  );
+  // The verify step must refuse to continue while links are missing (here: before the copy step ran)
+  const lineSql = readMigration(lineMoveIndex);
+  const verifyStep = lineSql.slice(lineSql.indexOf('-- Step 2'), lineSql.indexOf('-- Step 3'));
+  const guardErr = runMysqlExpectError(verifyStep, LEGACY_DB);
+  if (!guardErr || !/check constraint/i.test(guardErr)) {
+    throw new Error(`ASSERTION FAILED: verify step must abort when subscriptions are missing. Got: ${guardErr}`);
+  }
+  if (!columnExists('Customer', 'lineUserId', LEGACY_DB)) throw new Error('ASSERTION FAILED: column must still exist after an aborted verify');
+  console.log('  [PASS] Verify step aborts (CHECK constraint) while any link is missing; column kept.');
+
+  for (let i = lineMoveIndex; i < EXPECTED_MIGRATIONS.length; i++) {
+    applyMigration(i, LEGACY_DB);
+  }
+  assertEq(
+    queryScalar("SELECT GROUP_CONCAT(CONCAT(`repairOrderId`, ':', `lineUserId`) ORDER BY `repairOrderId`) FROM `OrderLineSubscription`", LEGACY_DB),
+    expectedPairs,
+    'every order of every LINE-linked customer has a subscription with that customer\'s LINE account'
+  );
+  assertEq(count('OrderLineSubscription', LEGACY_DB), Number(expectedLinks), 'existing subscription kept, not duplicated');
+  assertGte(Number(expectedLinks), 9, 'legacy fixture links at least the 9 legacy orders');
+  console.log(`  [PASS] ${expectedLinks} subscriptions (one per order of a LINE-linked customer); existing one not duplicated.`);
+  if (columnExists('Customer', 'lineUserId', LEGACY_DB)) {
+    throw new Error('ASSERTION FAILED: Customer.lineUserId must be dropped');
+  }
+  assertEq(
+    queryScalar(
+      `SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = '${LEGACY_DB}' AND INDEX_NAME = 'Customer_lineUserId_key'`,
+      LEGACY_DB
+    ),
+    '0',
+    'Customer_lineUserId_key dropped'
+  );
+  assertEq(count('Customer', LEGACY_DB), customersBefore, 'Customer rows unchanged');
+  assertEq(count('RepairOrder', LEGACY_DB), ordersNow, 'RepairOrder rows unchanged');
+  console.log('  [PASS] Customer.lineUserId and its unique index dropped; customers and orders untouched.');
+  console.log('\n[Step 6] Passed!\n');
 }
 
 function runSafeMigrationTest() {

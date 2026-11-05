@@ -1,5 +1,5 @@
 import prisma, { Prisma, RepairStatus } from '@homglai/db';
-import { SseService } from './sse.service';
+import { OrderEvents } from './order-events';
 import { notifySafely, OrdersRequeuedDigestEvent } from '../notifications';
 
 type Tx = Prisma.TransactionClient;
@@ -205,14 +205,9 @@ export class AssignmentService {
   ): Promise<void> {
     if (requeued.length === 0) return;
 
-    const updatedAt = new Date().toISOString();
+    // Internal event: public SSE status only, no LINE message to customers
     for (const order of requeued) {
-      SseService.broadcastUpdate(order.trackingToken, {
-        trackingToken: order.trackingToken,
-        jobNumber: order.jobNumber,
-        status: 'NEW',
-        updatedAt,
-      });
+      OrderEvents.statusChanged({ id: order.id, trackingToken: order.trackingToken, status: 'NEW' }, { notifyCustomer: false });
     }
 
     await notifySafely({

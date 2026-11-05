@@ -1,12 +1,12 @@
 import crypto from 'crypto';
 import prisma, { Prisma, RepairStatus } from '@homglai/db';
-import { SseService } from './sse.service';
+import { OrderEvents } from './order-events';
 import { AppError } from '../utils/app-error';
 import { resolveAcceptTarget, validateStatusTransition } from '../config/repair-status';
 import { getBangkokDateOnly, dateOnlyToDate } from '../utils/date';
 import { ACCEPTED_WORK_STATUSES, AssignmentService } from './assignment.service';
 import { LineWebhookService } from './line-webhook.service';
-import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
+import { customerResponseSelect, lineLinkCountInclude, withPublicCustomer } from '../utils/customer-view';
 import { computePayableAmount, computeTotalAmount, paymentSummary, toRepairItemView } from '../utils/repair-item-view';
 import { activityFields, recordActivity } from '../utils/activity';
 import { allocateJobNumber, resyncJobNumberCounter } from '../utils/job-number';
@@ -296,6 +296,7 @@ export class RepairService {
             },
             include: {
               customer: { select: customerResponseSelect },
+        ...lineLinkCountInclude,
               machine: true,
               symptoms: { include: { symptom: true } },
             },
@@ -330,6 +331,7 @@ export class RepairService {
       where: { id: createdOrder.id },
       include: {
         customer: { select: customerResponseSelect },
+        ...lineLinkCountInclude,
         machine: true,
         symptoms: { include: { symptom: true } },
         technician: {
@@ -524,7 +526,7 @@ export class RepairService {
   ) {
     const unitPrice = new Prisma.Decimal(data.unitPrice.toFixed(2));
 
-    const { order, item } = await prisma.$transaction(async (tx) => {
+    const { order, item, previousStatus } = await prisma.$transaction(async (tx) => {
       const existingOrder = await tx.repairOrder.findUnique({
         where: { id: repairOrderId },
       });
@@ -581,24 +583,18 @@ export class RepairService {
         },
       });
 
-      return { order: updatedOrder, item: createdItem };
+      return { order: updatedOrder, item: createdItem, previousStatus: existingOrder.status };
     });
 
     const itemView = toRepairItemView(item);
 
     // Broadcast SSE strictly post-commit (exclude sensitive technician/customer IDs)
-    SseService.broadcastUpdate(order.trackingToken, {
-      trackingToken: order.trackingToken,
-      jobNumber: order.jobNumber,
-      status: 'WAITING_APPROVAL',
-      newItem: {
-        id: item.id,
-        name: item.name,
-        price: itemView.unitPrice,
-        status: item.status,
-      },
-      updatedAt: order.updatedAt.toISOString(),
-    });
+    // Public SSE carries { status, updatedAt } only; customers get a LINE status message when it changed
+    if (previousStatus !== 'WAITING_APPROVAL') {
+      OrderEvents.statusChanged(order);
+    } else {
+      OrderEvents.touched(order);
+    }
 
     // Send push notification to LINE customer with approval actions
     LineWebhookService.notifyCustomerNewItem(repairOrderId, {
@@ -654,18 +650,7 @@ export class RepairService {
     });
 
     // Broadcast SSE post-commit
-    SseService.broadcastUpdate(order.trackingToken, {
-      trackingToken: order.trackingToken,
-      jobNumber: order.jobNumber,
-      status: order.status,
-      completedItem: {
-        id: item.id,
-        name: item.name,
-        price: item.unitPrice.toString(),
-        status: item.status,
-      },
-      updatedAt: new Date().toISOString(),
-    });
+    OrderEvents.touched({ trackingToken: order.trackingToken, status: order.status });
 
     return { order, item: toRepairItemView(item) };
   }
@@ -780,19 +765,11 @@ export class RepairService {
     });
 
     // Broadcast SSE strictly post-commit
-    SseService.broadcastUpdate(order.trackingToken, {
-      trackingToken: order.trackingToken,
-      jobNumber: order.jobNumber,
-      status: order.status,
-      resolvedItem: {
-        id: item.id,
-        name: item.name,
-        price: item.unitPrice.toString(),
-        status: item.status,
-      },
-      pendingItemsRemaining: pendingCount,
-      updatedAt: order.updatedAt.toISOString(),
-    });
+    if (pendingCount === 0) {
+      OrderEvents.statusChanged(order); // every item decided -> REPAIRING or INSPECTING
+    } else {
+      OrderEvents.touched(order);
+    }
 
     return { item: toRepairItemView(item), order };
   }
@@ -891,7 +868,8 @@ export class RepairService {
         });
         const reworkOrder = await tx.repairOrder.findUniqueOrThrow({
           where: { id },
-          include: { customer: { select: customerResponseSelect }, machine: true },
+          include: { customer: { select: customerResponseSelect },
+        ...lineLinkCountInclude, machine: true },
         });
         return {
           updatedOrder: reworkOrder,
@@ -930,7 +908,8 @@ export class RepairService {
       }
       const updated = await tx.repairOrder.findUniqueOrThrow({
         where: { id },
-        include: { customer: { select: customerResponseSelect }, machine: true },
+        include: { customer: { select: customerResponseSelect },
+        ...lineLinkCountInclude, machine: true },
       });
 
 
@@ -949,17 +928,8 @@ export class RepairService {
     });
 
     // Broadcast SSE strictly post-commit
-    SseService.broadcastUpdate(updatedOrder.trackingToken, {
-      trackingToken: updatedOrder.trackingToken,
-      jobNumber: updatedOrder.jobNumber,
-      status: updatedOrder.status,
-      updatedAt: updatedOrder.updatedAt.toISOString(),
-    });
+    OrderEvents.statusChanged(updatedOrder);
 
-    // Send push notification to customer on DELIVERED (COMPLETED is sent by completeOrder)
-    if (status === 'DELIVERED') {
-      LineWebhookService.notifyCustomerStatusChange(updatedOrder.id, status).catch(() => {});
-    }
 
     // Rework reserved for the original technician: same notification as any reserved job
     if (reworkReservedFor !== null) {
@@ -1093,13 +1063,7 @@ export class RepairService {
     });
 
     // Post-commit: status-only SSE, customer notification, next job for the freed technician
-    SseService.broadcastUpdate(result.trackingToken, {
-      trackingToken: result.trackingToken,
-      jobNumber: result.jobNumber,
-      status: 'COMPLETED',
-      updatedAt: new Date().toISOString(),
-    });
-    LineWebhookService.notifyCustomerStatusChange(id, 'COMPLETED', { outcome }).catch(() => {});
+    OrderEvents.statusChanged({ id, trackingToken: result.trackingToken, status: 'COMPLETED' });
     if (result.freed) {
       await AssignmentService.processQueue();
     }
@@ -1240,12 +1204,7 @@ export class RepairService {
     });
 
     // Status-only SSE strictly post-commit
-    SseService.broadcastUpdate(result.trackingToken, {
-      trackingToken: result.trackingToken,
-      jobNumber: result.jobNumber,
-      status: result.status,
-      updatedAt: new Date().toISOString(),
-    });
+    OrderEvents.statusChanged({ id, trackingToken: result.trackingToken, status: result.status });
 
     return RepairService.getRepairOrderById(id, actor);
   }
@@ -1440,6 +1399,7 @@ export class RepairService {
         customer: {
           select: customerResponseSelect,
         },
+        ...lineLinkCountInclude,
         machine: {
           select: { id: true, brand: true, model: true, serialNumber: true },
         },

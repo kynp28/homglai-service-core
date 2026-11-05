@@ -144,6 +144,7 @@ pnpm --filter @homglai/api create-admin
 | `TRUST_PROXY` | ไม่บังคับ | ตั้งค่าการเชื่อถือ Reverse Proxy ของ Express (`true`, `false`, หรือจำนวน hop เช่น `1`, Default: `false`) | `false` |
 | `LINE_CHANNEL_SECRET` | **จำเป็นสำหรับ Webhook** | Channel Secret จาก LINE Developers Console ใช้คำนวณ HMAC-SHA256 ตรวจสอบ Signature | `your-line-channel-secret` |
 | `LINE_CHANNEL_ACCESS_TOKEN` | **จำเป็นสำหรับส่งข้อความ** | Channel Access Token สำหรับเรียก LINE Messaging API (Reply/Push) | `your-line-channel-access-token` |
+| `LINE_LOGIN_CHANNEL_ID` | สำหรับ LIFF | Channel ID ของ LINE Login ที่ LIFF ใช้ server ใช้ตรวจว่า access token ออกให้ช่องนี้ (`LINE_IDENTITY_VERIFIER=mock` ใช้ได้เฉพาะ `NODE_ENV=test`) | `1234567890` |
 | `PUBLIC_TRACKING_BASE_URL` | ไม่บังคับ | Base URL สำหรับลิงก์ติดตามงานซ่อมที่ส่งให้ลูกค้าใน LINE (ถ้าไม่ตั้ง จะไม่ส่งลิงก์ติดตาม แต่ส่งข้อความอื่นตามปกติ) | `https://example.com/tracking/` |
 | `MYSQL_ROOT_PASSWORD` | **จำเป็นใน Docker** | รหัสผ่านผู้ใช้ root ของ MySQL (docker-compose บังคับต้องมี) | `your-secure-mysql-root-password` |
 | `ALLOW_DESTRUCTIVE_TESTS` | ไม่บังคับ | แฟล็กอนุญาตให้สคริปต์ทดสอบลบข้อมูลใน DB (Default: `false`, **ห้ามเปิดบน Production เด็ดขาด**) | `false` |
@@ -201,8 +202,10 @@ pnpm --filter @homglai/api create-admin
 | `PATCH` | `/api/notifications/:id/read` | เจ้าของแจ้งเตือน | ทำเครื่องหมายว่าอ่านแล้ว (ของคนอื่นตอบ 404) |
 | `PATCH` | `/api/repairs/:id/status` | ทุก Role (ตามเงื่อนไข State Machine) | เปลี่ยนสถานะใบสั่งซ่อม (ช่างเปลี่ยนได้เฉพาะงานตนเอง และส่งมอบ/ยกเลิกไม่ได้ — เป็นหน้าที่หน้าร้าน/แอดมิน, ช่างไม่ได้รับ `trackingToken`, `ADMIN`/`RECEPTIONIST` ได้รับตามปกติ; ตีกลับ `COMPLETED`→`REPAIRING` (กดโดย `RECEPTIONIST`/`ADMIN` เท่านั้น ช่างกดไม่ได้): งานกลับเป็น `NEW` จองให้ช่างเดิมถ้าว่าง ไม่ว่างเข้าคิวลำดับแรก ช่างได้แจ้งเตือน "งานตีกลับซ่อมใหม่" และต้องกดรับ แล้วงานกลับไป `REPAIRING`) |
 | `GET` | `/api/symptoms` | ทุก Role (Authenticated) | ดึงรายการหมวดหมู่อาการเสียและอาการเสียย่อยทั้งหมด |
-| `GET` | `/api/tracking/stream/:trackingToken` | Public | สตรีมสถานะงานซ่อมแบบเรียลไทม์ด้วย Server-Sent Events (SSE) โดยใช้ `trackingToken` ของใบสั่งซ่อม |
-| `POST` | `/api/webhook/line` | Public (ตรวจสอบ Signature) | รับ Webhook Event จาก LINE Messaging API สำหรับการผูกบัญชี LINE ลูกค้า และการกดปุ่มอนุมัติ/ปฏิเสธใบเสนอราคาผ่าน Postback |
+| `POST` | `/api/tracking/search` | Public (Rate Limited) | ค้นหาสถานะด้วยเลขเดียว (`REP-YYMM-NNNN` หรือเลขใบรับเครื่องตัวเลข 1–10 หลัก ไม่รับเบอร์โทร) ตอบเฉพาะ whitelist: เลขใบงาน สถานะ ป้ายไทย วันรับเครื่อง ยี่ห้อ/รุ่น timeline ไม่พบทุกกรณีตอบ 404 body เดียวกัน จำกัด `PUBLIC_SEARCH_RATE_LIMIT_MAX` ครั้ง/15 นาที/IP |
+| `POST` | `/api/tracking/subscribe-line` | Public (Rate Limited) | ลูกค้าผูกบัญชี LINE กับใบงาน (จาก LIFF) ด้วย `query`, `phone`, `lineAccessToken` server ตรวจ token กับ LINE เอง (`LINE_LOGIN_CHANNEL_ID`) ผิดทุกกรณีตอบข้อความเดียวกัน ผูกซ้ำได้ 1 บัญชีหลายใบงาน / 1 ใบงานหลายบัญชี จำกัด 10 ครั้ง/15 นาที/IP |
+| `GET` | `/api/tracking/stream/:trackingToken` | Public | สตรีมสถานะงานซ่อมแบบเรียลไทม์ด้วย Server-Sent Events (SSE) โดยใช้ `trackingToken` ของใบสั่งซ่อม แต่ละ event มีแค่ `{ status, updatedAt }` |
+| `POST` | `/api/webhook/line` | Public (ตรวจสอบ Signature) | รับ Webhook Event จาก LINE Messaging API สำหรับการผูกบัญชี LINE กับใบงาน (พิมพ์ `<เลขใบงานหรือเลขใบรับเครื่อง> <เบอร์โทร>` ผิดเกิน 5 ครั้ง/15 นาทีต่อบัญชีจะถูกพักไว้) และการกดปุ่มอนุมัติ/ปฏิเสธใบเสนอราคาผ่าน Postback (ปิดไว้ตาม `CUSTOMER_LINE_APPROVAL_ENABLED`) ลูกค้าที่ผูกไว้ได้ข้อความ LINE ทุกครั้งที่สถานะเปลี่ยน (ไม่มีราคา/รายการ) |
 
 ---
 
@@ -273,9 +276,10 @@ stateDiagram-v2
 1. **การซ่อน `trackingToken` จากช่างซ่อม (`TECHNICIAN`):**
    * ระบบมี Helper กลาง (`sanitizeForRole`) ทำการตรวจสอบและตัดฟิลด์ `trackingToken` ออกจาก Response ทุกระดับชั้น (Deep Redaction) สำหรับผู้เรียกที่มีบทบาท `TECHNICIAN` ในทุก Endpoint (`PATCH /status`, `POST /items`, `PATCH /items/:itemId/complete`, `PATCH /employees/:id/status`)
    * ป้องกันไม่ให้ช่างนำโทเคนติดตามไปเปิดดูหน้าของลูกค้า หรือส่งต่อให้บุคคลภายนอกโดยไม่ได้รับอนุญาต
-2. **การปกป้อง `customer.lineUserId`:**
-   * ข้อมูล `lineUserId` ของลูกค้าถือเป็นข้อมูลส่วนบุคคลอ่อนไหว (PII) API ทุก Endpoint (`POST /repairs`, `PATCH /status`, `GET /repairs/:id`, `PATCH /employees/:id/status`) จะ**ไม่ส่งฟิลด์ `customer.lineUserId` ออกมาใน Response ให้กับทุกบทบาท**
-   * ระบบจะแปลงเป็นฟิลด์ boolean `customer.lineLinked` (`true` เมื่อลูกค้าผูกบัญชี LINE แล้ว, `false` เมื่อยังไม่ได้ผูก) เพื่อให้หน้าจอแสดงผลสถานะได้โดยไม่ต้องเปิดเผยรหัสผู้ใช้ LINE
+2. **การปกป้อง LINE userId ของลูกค้า:**
+   * ตั้งแต่ Phase 6 บัญชี LINE ผูกกับ "ใบงาน" (ตาราง `OrderLineSubscription`) ไม่ใช่กับลูกค้า (คอลัมน์ `Customer.lineUserId` ถูกย้ายข้อมูลแล้วลบออก) API ไม่ส่ง `lineUserId` ออกไปให้ทุกบทบาท
+   * ระบบส่งฟิลด์ boolean `customer.lineLinked` (`true` เมื่อใบงานนี้มีบัญชี LINE ผูกอย่างน้อย 1 บัญชี) เพื่อให้หน้าจอแสดงผลได้โดยไม่เปิดเผยรหัสผู้ใช้ LINE
+   * API สาธารณะ (`/api/tracking/*`) สร้าง response แบบ whitelist (`toPublicTrackingView`) ไม่มีชื่อ เบอร์ ที่อยู่ ชื่อช่าง ราคา/รายการ หมายเหตุ trackingToken หรือ serial
 
 ---
 

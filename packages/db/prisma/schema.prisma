@@ -45,7 +45,7 @@ model Customer {
   name       String
   phone      String   @unique
   address    String?  @db.Text
-  lineUserId String?  @unique
+  // LINE accounts are linked per repair order (OrderLineSubscription) since Phase 6
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

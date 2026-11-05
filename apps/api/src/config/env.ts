@@ -45,6 +45,10 @@ export interface AppConfig {
   imageMaxPerKind: number;
   imageMaxLongEdge: number;
   notifierDriver: NotifierDriver;
+  /** LINE Login channel ID; LIFF access tokens must have been issued for it (Phase 6 subscribe-line) */
+  lineLoginChannelId: string;
+  /** 'line' verifies LIFF access tokens with LINE; 'mock' is accepted ONLY when NODE_ENV=test */
+  lineIdentityVerifier: 'line' | 'mock';
 }
 
 type Env = Record<string, string | undefined>;
@@ -137,7 +141,14 @@ export function loadAppConfig(env: Env = process.env): AppConfig {
     imageMaxPerKind: r.int('IMAGE_MAX_PER_KIND', 10, 1, 100),
     imageMaxLongEdge: r.int('IMAGE_MAX_LONG_EDGE', 1600, 100, 10000),
     notifierDriver: r.oneOf('NOTIFIER_DRIVER', 'db', ['db'] as const),
+    lineLoginChannelId: r.text('LINE_LOGIN_CHANNEL_ID', ''),
+    lineIdentityVerifier: r.oneOf('LINE_IDENTITY_VERIFIER', 'line', ['line', 'mock'] as const),
   };
+
+  // The mock LINE identity verifier trusts any "mock:<userId>" token: never allowed outside tests.
+  if (config.lineIdentityVerifier === 'mock' && env.NODE_ENV !== 'test') {
+    r.errors.push('LINE_IDENTITY_VERIFIER="mock" is only allowed when NODE_ENV=test');
+  }
 
   if (businessHoursStartMinute >= businessHoursEndMinute) {
     r.errors.push(

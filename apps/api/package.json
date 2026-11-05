@@ -20,6 +20,7 @@
     "test:queue": "tsx scripts/test-queue.ts",
     "test:pricing": "tsx scripts/test-pricing.ts",
     "test:shop-rules": "tsx scripts/test-shop-rules.ts",
+    "test:privacy": "tsx scripts/test-privacy.ts",
     "test:all": "node scripts/test-runner.js"
   },
   "dependencies": {

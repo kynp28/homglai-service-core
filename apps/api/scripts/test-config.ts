@@ -54,6 +54,8 @@ function main() {
   eq(d.imageMaxPerKind, 10, 'IMAGE_MAX_PER_KIND default 10');
   eq(d.imageMaxLongEdge, 1600, 'IMAGE_MAX_LONG_EDGE default 1600');
   eq(d.notifierDriver, 'db', 'NOTIFIER_DRIVER default db');
+  eq(d.lineIdentityVerifier, 'line', 'LINE_IDENTITY_VERIFIER default line (real LINE check)');
+  eq(d.lineLoginChannelId, '', 'LINE_LOGIN_CHANNEL_ID default empty');
   eq(Object.isFrozen(d), true, 'config object is frozen');
 
   console.log('\n[overrides]');
@@ -86,6 +88,9 @@ function main() {
   rejects({ BUSINESS_HOURS_START: '18:00', BUSINESS_HOURS_END: '08:00' }, ['BUSINESS_HOURS_START', 'BUSINESS_HOURS_END'], 'start after end');
   rejects({ BUSINESS_HOURS_START: '08:00', BUSINESS_HOURS_END: '08:00' }, ['BUSINESS_HOURS_START'], 'start equals end');
   rejects({ NOTIFIER_DRIVER: 'line' }, ['NOTIFIER_DRIVER'], 'unsupported notifier driver');
+  rejects({ LINE_IDENTITY_VERIFIER: 'mock' }, ['LINE_IDENTITY_VERIFIER'], 'mock LINE verifier without NODE_ENV=test');
+  rejects({ LINE_IDENTITY_VERIFIER: 'mock', NODE_ENV: 'production' }, ['LINE_IDENTITY_VERIFIER'], 'mock LINE verifier in production');
+  eq(loadAppConfig({ LINE_IDENTITY_VERIFIER: 'mock', NODE_ENV: 'test' }).lineIdentityVerifier, 'mock', 'mock LINE verifier allowed only with NODE_ENV=test');
   rejects(
     { ACK_TIMEOUT_MINUTES: 'x', JOBS_ENABLED: 'maybe', IMAGE_MAX_BYTES: '10' },
     ['ACK_TIMEOUT_MINUTES', 'JOBS_ENABLED', 'IMAGE_MAX_BYTES'],

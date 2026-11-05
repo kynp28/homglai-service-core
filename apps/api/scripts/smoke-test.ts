@@ -714,11 +714,12 @@ async function runSmokeTests() {
     },
   });
   await new Promise((r) => setTimeout(r, 400));
-  const unverifiedCust = await prisma.customer.findUnique({ where: { id: order.customerId } });
-  if (unverifiedCust?.lineUserId !== null) {
-    throw new Error('Expected customer.lineUserId to remain null on wrong phone binding');
+  // Phase 6: LINE accounts are linked per order (OrderLineSubscription), Customer.lineUserId no longer exists
+  const wrongPhoneSubs = await prisma.orderLineSubscription.count({ where: { repairOrderId: order.id } });
+  if (wrongPhoneSubs !== 0) {
+    throw new Error('Expected no LINE subscription after a wrong phone binding');
   }
-  console.log('Negative passed: Binding with wrong phone left customer.lineUserId as null.');
+  console.log('Negative passed: Binding with wrong phone created no LINE subscription.');
 
   // 10.2 Valid binding
   const validBindingBody = {
@@ -738,11 +739,13 @@ async function runSmokeTests() {
     },
   });
   await new Promise((r) => setTimeout(r, 400));
-  const boundCust = await prisma.customer.findUnique({ where: { id: order.customerId } });
-  if (boundCust?.lineUserId !== 'U_LINE_REAL_CUSTOMER') {
+  const boundSub = await prisma.orderLineSubscription.findFirst({
+    where: { repairOrderId: order.id, lineUserId: 'U_LINE_REAL_CUSTOMER' },
+  });
+  if (!boundSub) {
     throw new Error('LINE binding failed');
   }
-  console.log(`LINE binding succeeded: Customer lineUserId is ${boundCust.lineUserId}.`);
+  console.log('LINE binding succeeded: order subscribed by U_LINE_REAL_CUSTOMER.');
 
   // 10.3 Binding from a different LINE account on same order -> Rejected
   const hijackBody = {
@@ -762,11 +765,15 @@ async function runSmokeTests() {
     },
   });
   await new Promise((r) => setTimeout(r, 400));
-  const recheckedCust = await prisma.customer.findUnique({ where: { id: order.customerId } });
-  if (recheckedCust?.lineUserId !== 'U_LINE_REAL_CUSTOMER') {
-    throw new Error('Security flaw: LINE account was hijacked by another LINE user!');
+  // Phase 6 (SRS 3.2): one order may be followed by several LINE accounts (e.g. owner and shop staff),
+  // each proving the phone number on file. The first account must stay linked.
+  const subsAfterSecond = (
+    await prisma.orderLineSubscription.findMany({ where: { repairOrderId: order.id }, orderBy: { id: 'asc' } })
+  ).map((sub) => sub.lineUserId);
+  if (JSON.stringify(subsAfterSecond) !== JSON.stringify(['U_LINE_REAL_CUSTOMER', 'U_LINE_HIJACKER'])) {
+    throw new Error(`Expected both phone-verified accounts linked, got ${JSON.stringify(subsAfterSecond)}`);
   }
-  console.log('Negative passed: Re-binding from another LINE account was safely blocked.');
+  console.log('Positive passed: A second phone-verified LINE account was added; the first stays linked.');
 
   // 10.4 Non-owner postback -> DB must NOT change
   const nonOwnerPostback = {
@@ -940,7 +947,9 @@ async function runSmokeTests() {
   if (tech2View.status !== 200) {
     throw new Error('Expected 200 when Technician views own order');
   }
-  assertCustomerPrivacy('GET /api/repairs/:id (Technician)', tech2View.data.data.customer, true);
+  // Phase 6: lineLinked is per order. tech2Order is another order of the same customer and nobody linked
+  // LINE to it (the customer linked only `order` in Test 10), so it is false here.
+  assertCustomerPrivacy('GET /api/repairs/:id (Technician)', tech2View.data.data.customer, false);
   assertNoTrackingToken('GET /api/repairs/:id (Technician)', tech2View.data.data);
   console.log('Positive passed: Technician viewing own order succeeds with trackingToken safely hidden.');
 
@@ -1049,9 +1058,8 @@ async function runSmokeTests() {
   console.log('Positive passed: ADMIN retains trackingToken on PATCH /api/repairs/:id/status.');
 
   // 14.6 Link customer LINE and test GET /api/repairs/:id across 3 roles
-  await prisma.customer.update({
-    where: { id: privacyOrder.customerId },
-    data: { lineUserId: 'U_PRIVACY_LINE_USER_123' },
+  await prisma.orderLineSubscription.create({
+    data: { repairOrderId: privacyOrder.id, lineUserId: 'U_PRIVACY_LINE_USER_123' },
   });
 
   const getAdminPrivacy = await axios.get(`${API_BASE}/repairs/${privacyOrder.id}`, { headers: adminHeaders });

@@ -1,4 +1,11 @@
 import { Response } from 'express';
+import { RepairStatus } from '@homglai/db';
+
+/** The only data a public tracking stream ever receives. */
+export interface PublicStatusEvent {
+  status: RepairStatus;
+  updatedAt: string;
+}
 
 // Store connections mapped by trackingToken
 const clients = new Map<string, Set<Response>>();
@@ -28,10 +35,16 @@ export class SseService {
     });
   }
 
-  static broadcastUpdate(trackingToken: string, payload: any) {
+  /**
+   * Public SSE payload (SRS 5, PDPA): ONLY { status, updatedAt }. The payload is rebuilt from these
+   * two fields so extra properties passed by mistake can never reach the customer's browser.
+   * Call through OrderEvents.statusChanged, not directly.
+   */
+  static broadcastStatus(trackingToken: string, payload: PublicStatusEvent) {
     const tokenClients = clients.get(trackingToken);
     if (tokenClients) {
-      const data = `data: ${JSON.stringify(payload)}\n\n`;
+      const safe: PublicStatusEvent = { status: payload.status, updatedAt: payload.updatedAt };
+      const data = `data: ${JSON.stringify(safe)}\n\n`;
       tokenClients.forEach((client) => {
         client.write(data);
       });
