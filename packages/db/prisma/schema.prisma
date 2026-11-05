@@ -20,17 +20,24 @@ model Employee {
   status       EmployeeStatus @default(AVAILABLE)
   isActive     Boolean        @default(true)
   lineUserId   String?        @unique
+  // Moment the technician last became AVAILABLE. Used for FIFO queue ordering
+  // (longest-idle first) instead of updatedAt, which changes on every row update.
+  availableSince DateTime?
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
-  assignedOrders RepairOrder[] @relation("AssignedTechnician")
+  assignedOrders RepairOrder[]      @relation("AssignedTechnician")
   statusLogs     StatusLog[]
+  resolvedItems  RepairItem[]       @relation("ItemResolvedBy")
+  uploadedImages RepairOrderImage[]
+  notifications  Notification[]
 }
 
 model Customer {
   id         Int      @id @default(autoincrement())
   name       String
   phone      String   @unique
+  address    String?  @db.Text
   lineUserId String?  @unique
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -96,9 +103,49 @@ model RepairOrder {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
+  // Paper form (SRS 2)
+  paperBookNo        String?          @db.VarChar(20)
+  paperReceiptNo     String?          @unique @db.VarChar(20)
+  receivedDate       DateTime         @db.Date
+  workType           WorkType         @default(REPAIR)
+  warrantyStatus     WarrantyStatus?
+  warrantyExpiryDate DateTime?        @db.Date
+  billingType        BillingType?
+  loanerMachine      Boolean          @default(false)
+  loanerNote         String?          @db.VarChar(500)
+  accessories        Json?
+  careAdvice         Json?
+  warningNote        String?          @db.Text
+
+  // Assignment / acknowledgement (SRS 3.3)
+  assignedAt        DateTime?
+  acknowledgedAt    DateTime?
+  lastAckReminderAt DateTime?
+  ackReminderCount  Int       @default(0)
+  // Higher value is picked first. Used to push orders returned from a deactivated
+  // technician to the head of the queue. Legacy orders = 0.
+  queuePriority     Int       @default(0)
+
+  // Progress reminders (SRS 3.6)
+  lastActivityAt         DateTime?
+  lastProgressReminderAt DateTime?
+  progressReminderCount  Int       @default(0)
+
+  // Closing
+  closedAt          DateTime?
+  completionSummary String?   @db.Text
+
   symptoms    RepairOrderSymptom[]
   repairItems RepairItem[]
   statusLogs  StatusLog[]
+  images      RepairOrderImage[]
+  lineSubscriptions OrderLineSubscription[]
+
+  @@index([status, technicianId])
+  @@index([status, acknowledgedAt])
+  @@index([closedAt])
+  @@index([lastActivityAt])
+  @@index([status, technicianId, queuePriority, createdAt])
 }
 
 // Mapping Table สำหรับอาการเสีย (Many-to-Many)
@@ -121,12 +168,67 @@ model RepairItem {
   repairOrderId Int
   repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
 
+  barcode       String?     @db.VarChar(64)
   name          String
-  price         Decimal     @db.Decimal(10, 2)
+  quantity      Int         @default(1)
+  // Maps to the legacy `price` column so existing data stays valid without moving it.
+  unitPrice     Decimal     @map("price") @db.Decimal(10, 2)
+  itemType      ItemType    @default(PART)
   status        ItemStatus  @default(PENDING)
+
+  // Resolution (price confirmation) audit trail
+  resolvedById      Int?
+  resolvedBy        Employee?          @relation("ItemResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt        DateTime?
+  resolutionChannel ResolutionChannel?
+  resolutionNote    String?            @db.VarChar(500)
 
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
+}
+
+// ==============================
+// 4.1 Images, LINE subscriptions, in-app notifications
+// ==============================
+
+model RepairOrderImage {
+  id            Int         @id @default(autoincrement())
+  repairOrderId Int
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  kind          ImageKind
+  // Relative path only (never exposed through any API response)
+  storagePath   String      @db.VarChar(255)
+  uploadedById  Int
+  uploadedBy    Employee    @relation(fields: [uploadedById], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@index([repairOrderId, kind])
+}
+
+model OrderLineSubscription {
+  id            Int         @id @default(autoincrement())
+  repairOrderId Int
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  lineUserId    String
+  createdAt     DateTime    @default(now())
+
+  @@unique([repairOrderId, lineUserId])
+  @@index([lineUserId])
+}
+
+model Notification {
+  id            Int       @id @default(autoincrement())
+  recipientId   Int
+  recipient     Employee  @relation(fields: [recipientId], references: [id])
+  type          String    @db.VarChar(40)
+  repairOrderId Int?
+  title         String
+  body          String    @db.Text
+  payload       Json?
+  createdAt     DateTime  @default(now())
+  readAt        DateTime?
+
+  @@index([recipientId, readAt, createdAt])
 }
 
 // ==============================
@@ -160,6 +262,42 @@ enum EmployeeStatus {
   AVAILABLE
   BUSY
   OFFLINE
+  RESERVED
+}
+
+// Only REPAIR for now; ONSITE_REPAIR can be added later with an enum-extending migration.
+enum WorkType {
+  REPAIR
+}
+
+enum WarrantyStatus {
+  IN_WARRANTY
+  OUT_OF_WARRANTY
+}
+
+enum BillingType {
+  CHARGE_OUT_OF_WARRANTY
+  NO_CHARGE_IN_WARRANTY
+  CHARGE_IN_WARRANTY
+}
+
+enum ItemType {
+  PART
+  TRAVEL_FEE
+  LABOR_HOURS
+  SERVICE_FEE
+}
+
+enum ResolutionChannel {
+  PHONE
+  LINE
+}
+
+enum ImageKind {
+  INTAKE
+  RECEIPT_PAPER
+  DELIVERY
+  OTHER
 }
 
 enum RepairStatus {

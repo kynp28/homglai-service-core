@@ -140,6 +140,7 @@ async function main() {
           jobNumber: `REP-RND${round}-${m + 1}`,
           trackingToken: crypto.randomBytes(24).toString('base64url'),
           status: 'NEW',
+          receivedDate: new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z'),
           customerId: contentionCustomer.id,
           machineId: contentionMachine.id,
           technicianId: null,

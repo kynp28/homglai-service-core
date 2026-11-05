@@ -865,6 +865,7 @@ async function runSmokeTests() {
       jobNumber: `REP-TEST-T2-${Date.now()}`,
       trackingToken: crypto.randomBytes(24).toString('base64url'),
       status: 'REPAIRING',
+      receivedDate: new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z'),
       customerId: order.customerId,
       machineId: order.machineId,
       technicianId: 4, // Tech 2

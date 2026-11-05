@@ -3,10 +3,11 @@ import prisma, { Prisma, RepairStatus } from '@homglai/db';
 import { SseService } from './sse.service';
 import { AppError } from '../utils/app-error';
 import { validateStatusTransition } from '../config/repair-status';
-import { getBangkokYearMonth } from '../utils/date';
+import { getBangkokYearMonth, getBangkokDateOnly } from '../utils/date';
 import { AssignmentService } from './assignment.service';
 import { LineWebhookService } from './line-webhook.service';
 import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
+import { withLegacyPrice } from '../utils/repair-item-view';
 
 export class RepairService {
   static async createRepairOrder(data: {
@@ -111,6 +112,7 @@ export class RepairService {
               machineId,
               otherSymptom: data.otherSymptom || null,
               status: 'NEW',
+              receivedDate: getBangkokDateOnly(new Date()),
               symptoms: {
                 create: data.symptomIds.map((id) => ({ symptomId: id })),
               },
@@ -191,7 +193,7 @@ export class RepairService {
         data: {
           repairOrderId,
           name: data.name.trim(),
-          price: new Prisma.Decimal(data.price.toFixed(2)),
+          unitPrice: new Prisma.Decimal(data.price.toFixed(2)),
           status: 'PENDING',
         },
       });
@@ -223,7 +225,7 @@ export class RepairService {
       newItem: {
         id: item.id,
         name: item.name,
-        price: item.price.toString(),
+        price: item.unitPrice.toString(),
         status: item.status,
       },
       updatedAt: order.updatedAt.toISOString(),
@@ -233,10 +235,10 @@ export class RepairService {
     LineWebhookService.notifyCustomerNewItem(repairOrderId, {
       id: item.id,
       name: item.name,
-      price: item.price.toString(),
+      price: item.unitPrice.toString(),
     }).catch(() => {});
 
-    return { order, item };
+    return { order, item: withLegacyPrice(item) };
   }
 
   static async completeRepairItem(repairOrderId: number, itemId: number, userId: number) {
@@ -289,13 +291,13 @@ export class RepairService {
       completedItem: {
         id: item.id,
         name: item.name,
-        price: item.price.toString(),
+        price: item.unitPrice.toString(),
         status: item.status,
       },
       updatedAt: new Date().toISOString(),
     });
 
-    return { order, item };
+    return { order, item: withLegacyPrice(item) };
   }
 
   static async resolveRepairItem(
@@ -383,14 +385,14 @@ export class RepairService {
       resolvedItem: {
         id: item.id,
         name: item.name,
-        price: item.price.toString(),
+        price: item.unitPrice.toString(),
         status: item.status,
       },
       pendingItemsRemaining: pendingCount,
       updatedAt: order.updatedAt.toISOString(),
     });
 
-    return { item, order };
+    return { item: withLegacyPrice(item), order };
   }
 
   static async updateStatus(id: number, status: RepairStatus, userId: number, note?: string) {
@@ -672,6 +674,9 @@ export class RepairService {
     }
 
     // trackingToken redaction for TECHNICIAN is applied centrally in the controller (sanitizeForRole)
-    return withPublicCustomer(order);
+    return withPublicCustomer({
+      ...order,
+      repairItems: order.repairItems.map(withLegacyPrice),
+    });
   }
 }
