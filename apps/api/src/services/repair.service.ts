@@ -6,6 +6,7 @@ import { validateStatusTransition } from '../config/repair-status';
 import { getBangkokYearMonth } from '../utils/date';
 import { AssignmentService } from './assignment.service';
 import { LineWebhookService } from './line-webhook.service';
+import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
 
 export class RepairService {
   static async createRepairOrder(data: {
@@ -122,7 +123,7 @@ export class RepairService {
               },
             },
             include: {
-              customer: true,
+              customer: { select: customerResponseSelect },
               machine: true,
               symptoms: { include: { symptom: true } },
             },
@@ -152,7 +153,7 @@ export class RepairService {
     const finalOrder = await prisma.repairOrder.findUnique({
       where: { id: createdOrder.id },
       include: {
-        customer: true,
+        customer: { select: customerResponseSelect },
         machine: true,
         symptoms: { include: { symptom: true } },
         technician: {
@@ -161,7 +162,7 @@ export class RepairService {
       },
     });
 
-    return finalOrder || createdOrder;
+    return withPublicCustomer(finalOrder ?? createdOrder);
   }
 
   static async addRepairItem(
@@ -484,7 +485,7 @@ export class RepairService {
           status,
           technicianId: currentTechId,
         },
-        include: { customer: true, machine: true },
+        include: { customer: { select: customerResponseSelect }, machine: true },
       });
 
       // 2. Create status log
@@ -539,7 +540,7 @@ export class RepairService {
       await AssignmentService.processQueue();
     }
 
-    return updatedOrder;
+    return withPublicCustomer(updatedOrder);
   }
 
   static async getRepairOrders(params: {
@@ -576,7 +577,7 @@ export class RepairService {
     }
 
     if (params.search && params.search.trim().length > 0) {
-      const term = params.search.trim();
+      const term = params.search.trim().slice(0, 100);
       conditions.push({
         OR: [
           { jobNumber: { contains: term } },
@@ -632,7 +633,7 @@ export class RepairService {
       where: { id },
       include: {
         customer: {
-          select: { id: true, name: true, phone: true, lineUserId: true, createdAt: true },
+          select: customerResponseSelect,
         },
         machine: {
           select: { id: true, brand: true, model: true, serialNumber: true },
@@ -670,11 +671,7 @@ export class RepairService {
       }
     }
 
-    // Never leak trackingToken to technician; only expose to Receptionist/Admin
-    const { trackingToken, ...sanitizedOrder } = order;
-    return {
-      ...sanitizedOrder,
-      ...(user.role !== 'TECHNICIAN' ? { trackingToken } : {}),
-    };
+    // trackingToken redaction for TECHNICIAN is applied centrally in the controller (sanitizeForRole)
+    return withPublicCustomer(order);
   }
 }

@@ -6,8 +6,10 @@ import {
   addRepairItemSchema,
   resolveRepairItemSchema,
   updateRepairStatusSchema,
+  getRepairsQuerySchema,
 } from '../validators/repair.validator';
 import { AppError } from '../utils/app-error';
+import { sanitizeForRole } from '../utils/response-sanitizer';
 
 export class RepairController {
   static async createRepair(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -23,7 +25,7 @@ export class RepairController {
         receptionistId,
       });
 
-      res.status(201).json({ status: 'success', data: repairOrder });
+      res.status(201).json({ status: 'success', data: sanitizeForRole(repairOrder, req.user!.role) });
     } catch (error) {
       next(error);
     }
@@ -63,7 +65,7 @@ export class RepairController {
         technicianId,
       });
 
-      res.status(201).json({ status: 'success', data: result });
+      res.status(201).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);
     }
@@ -94,7 +96,7 @@ export class RepairController {
       }
 
       const result = await RepairService.completeRepairItem(repairOrderId, itemId, userId);
-      res.status(200).json({ status: 'success', data: result });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);
     }
@@ -111,7 +113,7 @@ export class RepairController {
       const { status } = resolveRepairItemSchema.parse(req.body);
 
       const result = await RepairService.resolveRepairItem(repairOrderId, itemId, status);
-      res.status(200).json({ status: 'success', data: result });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);
     }
@@ -152,7 +154,7 @@ export class RepairController {
       }
 
       const updatedOrder = await RepairService.updateStatus(id, status, userId, note);
-      res.status(200).json({ status: 'success', data: updatedOrder });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(updatedOrder, req.user!.role) });
     } catch (error) {
       next(error);
     }
@@ -160,23 +162,19 @@ export class RepairController {
 
   static async getRepairs(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { status, technicianId, search, page, limit } = req.query;
-
-      const parsedTechnicianId = technicianId ? parseInt(technicianId as string, 10) : undefined;
-      const parsedPage = page ? parseInt(page as string, 10) : 1;
-      const parsedLimit = limit ? parseInt(limit as string, 10) : 20;
+      const query = getRepairsQuerySchema.parse(req.query);
 
       const result = await RepairService.getRepairOrders({
         role: req.user!.role,
         userId: req.user!.employeeId,
-        status: status as any,
-        technicianId: isNaN(parsedTechnicianId as number) ? undefined : parsedTechnicianId,
-        search: typeof search === 'string' ? search : undefined,
-        page: isNaN(parsedPage) ? 1 : parsedPage,
-        limit: isNaN(parsedLimit) ? 20 : parsedLimit,
+        status: query.status,
+        technicianId: query.technicianId,
+        search: query.search,
+        page: query.page,
+        limit: query.limit,
       });
 
-      res.status(200).json({ status: 'success', data: result });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);
     }
@@ -194,7 +192,7 @@ export class RepairController {
         role: req.user!.role,
       });
 
-      res.status(200).json({ status: 'success', data: order });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
     } catch (error) {
       next(error);
     }

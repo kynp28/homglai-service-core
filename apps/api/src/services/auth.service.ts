@@ -34,7 +34,7 @@ export class AuthService {
       try {
         await bcrypt.compare(validated.password, employee.passwordHash);
       } catch (_) {}
-      throw new AppError(401, 'Account is deactivated');
+      throw new AppError(401, genericErrorMessage);
     }
 
     let isValidPassword = false;
