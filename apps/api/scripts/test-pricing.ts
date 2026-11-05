@@ -398,6 +398,8 @@ async function main() {
     eq(rReserved.technicianId, 6, 'next free technician reserved the rework first');
     eq((await order(N.id)).technicianId, null, 'older normal job still waiting');
     eq((await tech(6)).status, 'RESERVED', 'technician RESERVED');
+    const poolNote = await prisma.notification.findFirst({ where: { recipientId: 6, type: 'JOB_RESERVED', repairOrderId: R.id } });
+    eq(poolNote?.title, 'มีงานตีกลับซ่อมใหม่รอคุณกดรับ', 'queue notification says it is a rework');
     const accepted = await axios.post(`${API}/repairs/${R.id}/accept`, {}, { headers: t[6] });
     eq(accepted.data.data.status, 'REPAIRING', 'accepting a rework resumes at REPAIRING');
     eq((await order(R.id)).queuePriority, 0, 'priority reset after accept');

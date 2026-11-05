@@ -14,6 +14,7 @@ import employeeRoutes from './routes/employee.routes';
 import webhookRoutes from './routes/webhook.routes';
 import symptomRoutes from './routes/symptom.routes';
 import notificationRoutes from './routes/notification.routes';
+import holidayRoutes from './routes/holiday.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 
 dotenv.config();
@@ -92,6 +93,7 @@ app.use('/api/employees', employeeRoutes);
 app.use('/api/webhook', webhookRoutes);
 app.use('/api/symptoms', symptomRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/holidays', holidayRoutes);
 
 // Catch 404 for any unhandled routes
 app.use(notFoundHandler);

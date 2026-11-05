@@ -23,6 +23,9 @@ model Employee {
   // Moment the technician last became AVAILABLE. Used for FIFO queue ordering
   // (longest-idle first) instead of updatedAt, which changes on every row update.
   availableSince DateTime?
+  // Fixed weekly day off, 0 = Sunday ... 6 = Saturday (Asia/Bangkok). Business-minute timers of the
+  // technician's own jobs are paused on that day. null = no fixed day off.
+  weeklyDayOff Int?
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
@@ -33,6 +36,8 @@ model Employee {
   notifications  Notification[]
   helpedOrders   RepairOrderHelper[] @relation("HelperTechnician")
   helpersAdded   RepairOrderHelper[] @relation("HelperAddedBy")
+  holidaysCreated ShopHoliday[]     @relation("HolidayCreatedBy")
+  paymentsRecorded RepairOrder[]    @relation("PaymentRecordedBy")
 }
 
 model Customer {
@@ -136,6 +141,16 @@ model RepairOrder {
   // Closing
   closedAt          DateTime?
   completionSummary String?   @db.Text
+  // REPAIRED or NOT_REPAIRED (customer declined); legacy COMPLETED/DELIVERED orders backfilled REPAIRED
+  repairOutcome     RepairOutcome?
+
+  // Payment recorded at / after delivery (record only, never blocks delivery)
+  paidAmount          Decimal?       @db.Decimal(10, 2)
+  paymentMethod       PaymentMethod?
+  paymentNote         String?        @db.VarChar(500)
+  paidAt              DateTime?
+  paymentRecordedById Int?
+  paymentRecordedBy   Employee?      @relation("PaymentRecordedBy", fields: [paymentRecordedById], references: [id])
 
   symptoms    RepairOrderSymptom[]
   repairItems RepairItem[]
@@ -149,6 +164,7 @@ model RepairOrder {
   @@index([closedAt])
   @@index([lastActivityAt])
   @@index([status, technicianId, queuePriority, createdAt])
+  @@index([paymentRecordedById])
 }
 
 // Mapping Table สำหรับอาการเสีย (Many-to-Many)
@@ -335,4 +351,35 @@ enum ItemStatus {
   APPROVED
   REJECTED
   COMPLETED
+}
+
+// Phase 5b: one row per job-number prefix (REP-YYMM). lastSeq is incremented atomically inside the
+// intake transaction so concurrent intakes never collide on jobNumber.
+model JobNumberSequence {
+  prefix    String   @id @db.VarChar(16)
+  lastSeq   Int
+  updatedAt DateTime @updatedAt
+}
+
+// Phase 5b: special shop closures (e.g. Songkran). Business-minute timers skip these dates.
+model ShopHoliday {
+  id          Int      @id @default(autoincrement())
+  date        DateTime @unique @db.Date
+  name        String   @db.VarChar(100)
+  createdById Int
+  createdBy   Employee @relation("HolidayCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([createdById])
+}
+
+enum RepairOutcome {
+  REPAIRED
+  NOT_REPAIRED
+}
+
+enum PaymentMethod {
+  CASH
+  TRANSFER
+  OTHER
 }

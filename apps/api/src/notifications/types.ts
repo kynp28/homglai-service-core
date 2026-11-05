@@ -14,6 +14,8 @@ export interface JobReservedEvent {
   repairOrderId: number;
   jobNumber: string;
   machine: MachineLabel;
+  /** A finished job sent back for rework (customer says it is still faulty) */
+  rework?: boolean;
 }
 
 /** Technicians have not accepted reserved jobs in time (to: every active ADMIN). */

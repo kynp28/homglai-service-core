@@ -97,6 +97,7 @@ const EXPECTED_MIGRATIONS: { dir: string; label: string }[] = [
   { dir: '20261104130000_optional_status_log_changed_by',     label: 'Optional StatusLog.changedById' },
   { dir: '20261105140000_srs_v2_schema_additions',            label: 'SRS v2 schema additions (3-step)' },
   { dir: '20261105170000_repair_order_helpers',                label: 'RepairOrderHelper table (additive)' },
+  { dir: '20261105190000_shop_rules',                          label: 'Job-number counter, holidays, day off, outcome, payment (3-step)' },
 ];
 
 const migrationsRoot = path.resolve(__dirname, '../../../packages/db/prisma/migrations');
@@ -148,11 +149,38 @@ function runEmptyDatabaseScenario(): void {
   console.log(`[Scenario A] Applying ALL migrations to an EMPTY database "${EMPTY_DB}"...`);
   runMysql(`DROP DATABASE IF EXISTS \`${EMPTY_DB}\`; CREATE DATABASE \`${EMPTY_DB}\`;`);
 
-  for (let i = 0; i < EXPECTED_MIGRATIONS.length; i++) {
+  const shopRulesIndex = EXPECTED_MIGRATIONS.findIndex((m) => m.dir === '20261105190000_shop_rules');
+  for (let i = 0; i < shopRulesIndex; i++) {
     applyMigration(i, EMPTY_DB);
   }
+  // Job numbers stored before the counter table existed: the counter must start after the highest one per month
+  runMysql(
+    `INSERT INTO \`Customer\` (\`id\`, \`name\`, \`phone\`, \`updatedAt\`) VALUES (1, 'Seq', '0800000000', NOW(3));
+     INSERT INTO \`Machine\` (\`id\`, \`brand\`, \`model\`, \`customerId\`, \`updatedAt\`) VALUES (1, 'GEF', 'Aa+', 1, NOW(3));
+     INSERT INTO \`RepairOrder\` (\`jobNumber\`, \`trackingToken\`, \`status\`, \`customerId\`, \`machineId\`, \`receivedDate\`, \`updatedAt\`) VALUES
+       ('REP-2610-0007', 'tok_seq_1', 'DELIVERED', 1, 1, '2026-10-05', NOW(3)),
+       ('REP-2610-0012', 'tok_seq_2', 'NEW',       1, 1, '2026-10-20', NOW(3)),
+       ('REP-2611-0003', 'tok_seq_3', 'COMPLETED', 1, 1, '2026-11-02', NOW(3)),
+       ('REP-MIG-0099',  'tok_seq_4', 'NEW',       1, 1, '2026-11-02', NOW(3));`,
+    EMPTY_DB
+  );
+  for (let i = shopRulesIndex; i < EXPECTED_MIGRATIONS.length; i++) {
+    applyMigration(i, EMPTY_DB);
+  }
+  assertEq(
+    queryScalar("SELECT GROUP_CONCAT(CONCAT(`prefix`, '=', `lastSeq`) ORDER BY `prefix`) FROM `JobNumberSequence`", EMPTY_DB),
+    'REP-2610=12,REP-2611=3',
+    '[Empty DB] JobNumberSequence seeded with the highest number per month (non REP-YYMM numbers ignored)'
+  );
+  assertEq(
+    queryScalar("SELECT GROUP_CONCAT(CONCAT(`jobNumber`, ':', IFNULL(`repairOutcome`, 'NULL')) ORDER BY `jobNumber`) FROM `RepairOrder`", EMPTY_DB),
+    'REP-2610-0007:REPAIRED,REP-2610-0012:NULL,REP-2611-0003:REPAIRED,REP-MIG-0099:NULL',
+    '[Empty DB] repairOutcome backfilled REPAIRED for COMPLETED/DELIVERED only'
+  );
+  console.log('  [PASS] Job-number counter seeded from existing numbers; repairOutcome backfilled.');
+  runMysql('DELETE FROM `RepairOrder`; DELETE FROM `Machine`; DELETE FROM `Customer`; DELETE FROM `JobNumberSequence`;', EMPTY_DB);
 
-  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification', 'RepairOrderHelper']) {
+  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification', 'RepairOrderHelper', 'JobNumberSequence', 'ShopHoliday']) {
     if (!tableExists(t, EMPTY_DB)) throw new Error(`ASSERTION FAILED: [Empty DB] table ${t} must exist`);
   }
   const receivedDateNullable = queryScalar(
@@ -462,11 +490,30 @@ VALUES
   console.log('  [PASS] lastActivityAt = updatedAt; queuePriority & reminder counters = 0; workType = REPAIR.');
 
   // --- 5j: New tables exist and are empty ---
-  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification', 'RepairOrderHelper']) {
+  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification', 'RepairOrderHelper', 'JobNumberSequence', 'ShopHoliday']) {
     if (!tableExists(t, LEGACY_DB)) throw new Error(`ASSERTION FAILED: table ${t} must exist`);
     assertEq(count(t, LEGACY_DB), 0, `${t} starts empty`);
   }
-  console.log('  [PASS] New tables exist and are empty: RepairOrderImage, OrderLineSubscription, Notification, RepairOrderHelper.');
+  console.log('  [PASS] New tables exist and are empty: RepairOrderImage, OrderLineSubscription, Notification, RepairOrderHelper, JobNumberSequence (legacy REP-MIG numbers ignored), ShopHoliday.');
+
+  // --- 5j2: Phase 5b columns on legacy rows ---
+  assertEq(
+    queryScalar("SELECT GROUP_CONCAT(`id` ORDER BY `id`) FROM `RepairOrder` WHERE `repairOutcome` = 'REPAIRED'", LEGACY_DB),
+    queryScalar("SELECT GROUP_CONCAT(`id` ORDER BY `id`) FROM `RepairOrder` WHERE `status` IN ('COMPLETED', 'DELIVERED')", LEGACY_DB),
+    'repairOutcome = REPAIRED exactly for legacy COMPLETED/DELIVERED orders'
+  );
+  assertEq(
+    queryScalar("SELECT COUNT(*) FROM `RepairOrder` WHERE `status` NOT IN ('COMPLETED', 'DELIVERED') AND `repairOutcome` IS NOT NULL", LEGACY_DB),
+    '0',
+    'other orders keep repairOutcome NULL'
+  );
+  assertEq(
+    queryScalar('SELECT COUNT(*) FROM `RepairOrder` WHERE `paidAmount` IS NOT NULL OR `paymentMethod` IS NOT NULL OR `paidAt` IS NOT NULL OR `paymentRecordedById` IS NOT NULL', LEGACY_DB),
+    '0',
+    'no payment invented for legacy orders'
+  );
+  assertEq(queryScalar('SELECT COUNT(*) FROM `Employee` WHERE `weeklyDayOff` IS NOT NULL', LEGACY_DB), '0', 'weeklyDayOff NULL for every employee');
+  console.log('  [PASS] Legacy orders: repairOutcome backfilled only for COMPLETED/DELIVERED; no payment; weeklyDayOff NULL.');
 
   // --- 5k: New enum value RESERVED accepted ---
   runMysql("UPDATE `Employee` SET `status` = 'RESERVED' WHERE `id` = 3; UPDATE `Employee` SET `status` = 'AVAILABLE' WHERE `id` = 3;", LEGACY_DB);
@@ -502,6 +549,8 @@ VALUES
     'Notification_recipientId_readAt_createdAt_idx',
     'RepairOrderHelper_repairOrderId_technicianId_key',
     'RepairOrderHelper_technicianId_idx',
+    'ShopHoliday_date_key',
+    'RepairOrder_paymentRecordedById_idx',
   ];
   for (const idx of requiredIndexes) {
     const n = queryScalar(
@@ -512,7 +561,7 @@ VALUES
   }
   console.log(`  [PASS] All ${requiredIndexes.length} required indexes exist.`);
 
-  console.log('\n[Step 5] All 13 assertion groups passed!\n');
+  console.log('\n[Step 5] All 14 assertion groups passed!\n');
 }
 
 function runSafeMigrationTest() {

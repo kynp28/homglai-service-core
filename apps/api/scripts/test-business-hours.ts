@@ -4,6 +4,7 @@
  */
 import {
   type BusinessWindow,
+  bangkokDateKey,
   businessMinutesBetween,
   getBusinessWindow,
   isWithinBusinessHours,
@@ -89,6 +90,45 @@ function main() {
   eq(businessMinutesBetween(bkk('2026-11-05T08:00:00'), bkk('2026-11-05T08:00:59'), SHOP), 0, '59 seconds floors to 0');
   eq(businessMinutesBetween(bkk('2026-11-05T08:00:30'), bkk('2026-11-05T08:02:00'), SHOP), 1, '90 seconds floors to 1');
   eq(businessMinutesBetween(bkk('2026-11-05T17:29:30'), bkk('2026-11-06T08:00:30'), SHOP), 1, '30s before close + 30s after open = 1 minute');
+
+  console.log('\n[closed days — shop holidays and weekly day off]');
+  // 2026-11-05 is a Thursday, 2026-11-06 Friday, 2026-11-08 Sunday
+  const thuToSat = [bkk('2026-11-05T10:00'), bkk('2026-11-07T10:00')] as const;
+  eq(businessMinutesBetween(thuToSat[0], thuToSat[1], SHOP), 1140, 'Thu 10:00 -> Sat 10:00 open every day (450+570+120)');
+  eq(businessMinutesBetween(thuToSat[0], thuToSat[1], SHOP, {}), 1140, 'empty closed days = same result');
+  eq(
+    businessMinutesBetween(thuToSat[0], thuToSat[1], SHOP, { dates: new Set(['2026-11-06']) }),
+    570,
+    'Friday shop holiday skipped (450+120)'
+  );
+  eq(
+    businessMinutesBetween(thuToSat[0], thuToSat[1], SHOP, { weekdays: new Set([5]) }),
+    570,
+    'technician weekly day off on Friday skipped'
+  );
+  eq(
+    businessMinutesBetween(thuToSat[0], thuToSat[1], SHOP, { dates: new Set(['2026-11-05']), weekdays: new Set([6]) }),
+    570,
+    'Thursday holiday + Saturday day off -> only Friday counts'
+  );
+  eq(
+    businessMinutesBetween(bkk('2026-11-05T09:00'), bkk('2026-11-05T11:00'), SHOP, { dates: new Set(['2026-11-05']) }),
+    0,
+    'whole range on a holiday = 0'
+  );
+  eq(
+    businessMinutesBetween(bkk('2026-11-07T17:00'), bkk('2026-11-09T09:00'), SHOP, { weekdays: new Set([0]) }),
+    90,
+    'Sunday day off: Sat 17:00 -> Mon 09:00 = 30+60'
+  );
+  eq(
+    businessMinutesBetween(bkk('2026-11-05T10:00'), bkk('2026-11-05T09:00'), SHOP, { weekdays: new Set([4]) }),
+    0,
+    'from > to with closed days returns 0'
+  );
+  throws(() => businessMinutesBetween(thuToSat[0], thuToSat[1], SHOP, { weekdays: new Set([7]) }), 'weekday 7');
+  eq(bangkokDateKey(bkk('2026-11-05T06:30')), '2026-11-05', 'bangkokDateKey uses the Bangkok date (UTC is still Nov 4)');
+  eq(bangkokDateKey(bkk('2026-11-05T23:59:59')), '2026-11-05', 'bangkokDateKey late evening');
 
   console.log('\n[input validation and defaults]');
   throws(() => businessMinutesBetween(new Date('invalid'), bkk('2026-11-05T10:00'), SHOP), 'invalid from date');

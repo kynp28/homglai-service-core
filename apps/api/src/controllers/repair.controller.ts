@@ -7,6 +7,7 @@ import {
   addRepairItemSchema,
   resolveRepairItemSchema,
   completeRepairSchema,
+  paymentSchema,
   setHelpersSchema,
   updateRepairStatusSchema,
   getRepairsQuerySchema,
@@ -151,7 +152,7 @@ export class RepairController {
         throw new AppError(400, 'Invalid repair order ID');
       }
 
-      const { status, note } = updateRepairStatusSchema.parse(req.body);
+      const { status, note, payment } = updateRepairStatusSchema.parse(req.body);
       const userId = req.user!.employeeId;
 
       const order = await prisma.repairOrder.findUnique({
@@ -165,23 +166,32 @@ export class RepairController {
       // Role permission checks (D.2)
       if (req.user!.role === 'RECEPTIONIST') {
         const isCompletedToDelivered = order.status === 'COMPLETED' && status === 'DELIVERED';
+        // Rework is requested at the front desk when the customer reports the machine is still faulty
+        const isRework = order.status === 'COMPLETED' && status === 'REPAIRING';
         const isCancelling = status === 'CANCELLED';
-        if (!isCompletedToDelivered && !isCancelling) {
+        if (!isCompletedToDelivered && !isRework && !isCancelling) {
           throw new AppError(
             403,
-            'Forbidden: Receptionists can only transition orders from COMPLETED to DELIVERED, or CANCELLED'
+            'Forbidden: Receptionists can only transition orders from COMPLETED to DELIVERED or REPAIRING (rework), or CANCELLED'
           );
         }
       } else if (req.user!.role === 'TECHNICIAN') {
         if (order.technicianId !== userId) {
           throw new AppError(403, 'Forbidden: You are not the assigned technician for this order');
         }
+        if (order.status === 'COMPLETED' && status === 'REPAIRING') {
+          throw new AppError(403, 'Forbidden: Rework is requested by RECEPTIONIST or ADMIN');
+        }
+        // Handing the machine back and cancelling are front-desk decisions (same rule as allowedActions)
+        if (status === 'DELIVERED' || status === 'CANCELLED') {
+          throw new AppError(403, `Forbidden: ${status} is set by RECEPTIONIST or ADMIN`);
+        }
         if (status === 'COMPLETED') {
           throw new AppError(403, 'Forbidden: Technicians submit finished work with POST /api/repairs/:id/complete');
         }
       }
 
-      const updatedOrder = await RepairService.updateStatus(id, status, { id: userId, role: req.user!.role }, note);
+      const updatedOrder = await RepairService.updateStatus(id, status, { id: userId, role: req.user!.role }, note, payment);
       res.status(200).json({ status: 'success', data: sanitizeForRole(updatedOrder, req.user!.role) });
     } catch (error) {
       next(error);
@@ -247,6 +257,21 @@ export class RepairController {
         throw new AppError(400, 'Invalid repair order ID');
       }
       const order = await RepairService.stillWorking(id, { id: req.user!.employeeId, role: req.user!.role });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** PUT /api/repairs/:id/payment — RECEPTIONIST or ADMIN (route enforces roles). */
+  static async setPayment(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+      const payment = paymentSchema.parse(req.body);
+      const order = await RepairService.setPayment(id, { id: req.user!.employeeId, role: req.user!.role }, payment);
       res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
     } catch (error) {
       next(error);

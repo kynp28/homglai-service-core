@@ -190,6 +190,10 @@ router.get('/', authenticate, RepairController.getRepairs);
  *       Full intake data (paper form fields, warranty, accessories, careAdvice, ...), items with
  *       quantity / unitPrice / amount / itemType / barcode / resolution fields, and totalAmount
  *       (sum of the amounts of all items, no VAT/discount). TECHNICIAN may only view orders assigned to them.
+ *       Also returns payment (see PUT /payment) and allowedActions: the buttons the caller may use on this order —
+ *       ACCEPT, RELEASE, ADD_ITEM, RESOLVE_ITEM, COMPLETE_ITEM, START_REPAIR, STILL_WORKING, COMPLETE,
+ *       COMPLETE_NOT_REPAIRED, REWORK, DELIVER, RECORD_PAYMENT, EDIT_HELPERS, EDIT_INTAKE, CANCEL. The web app shows a
+ *       button only when its action is listed; the endpoints enforce the same rules.
  *     responses:
  *       200:
  *         description: Repair order details
@@ -396,6 +400,8 @@ router.patch(
  *       COMPLETED first (409 with the count). Optional helperTechnicianIds records technicians who helped
  *       (informational only, active technicians other than the owner). The technician becomes AVAILABLE when they
  *       hold no other job and is immediately offered the next job in the queue.
+ *       outcome NOT_REPAIRED ("ลูกค้าไม่ซ่อม") closes an INSPECTING or REPAIRING order without repair; the machine is
+ *       then handed back through DELIVERED as usual and the customer LINE message says it was not repaired.
  *     parameters:
  *       - in: path
  *         name: id
@@ -414,6 +420,7 @@ router.patch(
  *                 type: array
  *                 maxItems: 10
  *                 items: { type: integer }
+ *               outcome: { type: string, enum: [REPAIRED, NOT_REPAIRED], default: REPAIRED }
  *     responses:
  *       200:
  *         description: Completed; returns the repair order details
@@ -488,6 +495,45 @@ router.put('/:id/helpers', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), R
 
 /**
  * @openapi
+ * /api/repairs/{id}/payment:
+ *   put:
+ *     summary: Record or correct the payment of a COMPLETED / DELIVERED order (RECEPTIONIST, ADMIN)
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       Record only, never blocks delivery. The detail response has payment { payableAmount (APPROVED + COMPLETED
+ *       items), paidAmount, status NOT_RECORDED | MATCHED | DIFFERENT, warning { code, message } | null, method, note,
+ *       paidAt, recordedBy }. Every change is written to the status log.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [amount, method]
+ *             properties:
+ *               amount: { type: number, minimum: 0 }
+ *               method: { type: string, enum: [CASH, TRANSFER, OTHER] }
+ *               note: { type: string, maxLength: 500 }
+ *     responses:
+ *       200:
+ *         description: Recorded; returns the repair order details
+ *       400:
+ *         description: Invalid amount / method
+ *       403:
+ *         description: Not RECEPTIONIST / ADMIN
+ *       409:
+ *         description: Order is not COMPLETED or DELIVERED
+ */
+router.put('/:id/payment', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairController.setPayment);
+
+/**
+ * @openapi
  * /api/repairs/{id}/items/{itemId}/complete:
  *   patch:
  *     summary: Mark an approved item as completed
@@ -544,6 +590,14 @@ router.patch(
  *                 type: string
  *                 enum: [NEW, INSPECTING, WAITING_APPROVAL, REPAIRING, COMPLETED, DELIVERED, CANCELLED]
  *               note: { type: string }
+ *               payment:
+ *                 type: object
+ *                 description: Only with status DELIVERED. Payment received at handover (record only, never required).
+ *                 required: [amount, method]
+ *                 properties:
+ *                   amount: { type: number, minimum: 0, example: 845.3 }
+ *                   method: { type: string, enum: [CASH, TRANSFER, OTHER] }
+ *                   note: { type: string, maxLength: 500 }
  *     responses:
  *       200:
  *         description: Status updated successfully.

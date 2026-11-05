@@ -34,3 +34,43 @@ export function toRepairItemView<T extends ItemLike>(item: T) {
 export function computeTotalAmount(items: ItemLike[]): string {
   return items.reduce((sum, item) => sum.add(itemAmount(item)), new Prisma.Decimal(0)).toFixed(2);
 }
+
+/** What the customer agreed to pay: APPROVED + COMPLETED items only (REJECTED/PENDING excluded). */
+export function computePayableAmount(items: ItemLike[]): string {
+  return items
+    .filter((item) => item.status === 'APPROVED' || item.status === 'COMPLETED')
+    .reduce((sum, item) => sum.add(itemAmount(item)), new Prisma.Decimal(0))
+    .toFixed(2);
+}
+
+export type PaymentCheckStatus = 'NOT_RECORDED' | 'MATCHED' | 'DIFFERENT';
+
+/**
+ * Payment summary (record only — never blocks delivery). `warning` is a Thai message for staff when
+ * a payable order has no payment recorded or the recorded amount differs from the payable amount.
+ */
+export function paymentSummary(paidAmount: Prisma.Decimal | null, payableAmount: string) {
+  const payable = new Prisma.Decimal(payableAmount);
+  let status: PaymentCheckStatus;
+  let warning: { code: string; message: string } | null = null;
+  if (paidAmount === null) {
+    status = 'NOT_RECORDED';
+    if (payable.gt(0)) {
+      warning = { code: 'PAYMENT_NOT_RECORDED', message: `ยังไม่ได้บันทึกการรับเงิน (ยอดที่ต้องชำระ ${payableAmount} บาท)` };
+    }
+  } else if (new Prisma.Decimal(paidAmount).eq(payable)) {
+    status = 'MATCHED';
+  } else {
+    status = 'DIFFERENT';
+    warning = {
+      code: 'PAYMENT_AMOUNT_DIFFERS',
+      message: `ยอดที่รับ ${new Prisma.Decimal(paidAmount).toFixed(2)} บาท ไม่ตรงกับยอดที่ต้องชำระ ${payableAmount} บาท`,
+    };
+  }
+  return {
+    payableAmount,
+    paidAmount: paidAmount === null ? null : new Prisma.Decimal(paidAmount).toFixed(2),
+    status,
+    warning,
+  };
+}

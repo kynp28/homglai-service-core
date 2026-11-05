@@ -2,8 +2,9 @@
  * Business-hours arithmetic (SRS 3.6).
  *
  * Pure functions: no database access and no `new Date()` / `Date.now()` inside — every instant is
- * passed in, so callers and tests control time. The shop is open every day (no holidays) inside a
- * daily window in Asia/Bangkok local time. Thailand has no DST, so local time = UTC + 7h exactly.
+ * passed in, so callers and tests control time. The shop is open every day inside a daily window in
+ * Asia/Bangkok local time, except closed days passed in by the caller (shop holidays and, for one
+ * technician's timers, their weekly day off). Thailand has no DST, so local time = UTC + 7h exactly.
  *
  * The window is half-open: [start, end). With 08:00-17:30, 08:00:00 is inside and 17:30:00 is outside.
  */
@@ -14,6 +15,14 @@ export interface BusinessWindow {
   startMinute: number;
   /** Minutes after local midnight (Asia/Bangkok), exclusive */
   endMinute: number;
+}
+
+/** Days on which no business minute is counted. */
+export interface ClosedDays {
+  /** Bangkok calendar dates 'YYYY-MM-DD' (shop holidays) */
+  dates?: ReadonlySet<string>;
+  /** Bangkok weekdays, 0 = Sunday ... 6 = Saturday (a technician's weekly day off) */
+  weekdays?: ReadonlySet<number>;
 }
 
 const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -54,15 +63,32 @@ export function isWithinBusinessHours(date: Date, window: BusinessWindow = getBu
   return msIntoDay >= window.startMinute * MINUTE_MS && msIntoDay < window.endMinute * MINUTE_MS;
 }
 
+/** Bangkok calendar date 'YYYY-MM-DD' of a Bangkok-local day number. */
+function localDayKey(day: number): string {
+  return new Date(day * DAY_MS).toISOString().slice(0, 10);
+}
+
+/** Bangkok weekday (0 = Sunday) of a Bangkok-local day number. */
+function localWeekday(day: number): number {
+  return new Date(day * DAY_MS).getUTCDay();
+}
+
+/** Bangkok calendar date 'YYYY-MM-DD' of an instant. */
+export function bangkokDateKey(date: Date): string {
+  assertValidDate(date, 'date');
+  return localDayKey(Math.floor((date.getTime() + BANGKOK_OFFSET_MS) / DAY_MS));
+}
+
 /**
  * Whole minutes between `from` and `to` that fall inside the business window, across any number
- * of days (nights are skipped). Returns 0 when `to` is not after `from`.
- * Seconds are summed exactly and floored once at the end.
+ * of days (nights are skipped). Days listed in `closed` count as 0. Returns 0 when `to` is not
+ * after `from`. Seconds are summed exactly and floored once at the end.
  */
 export function businessMinutesBetween(
   from: Date,
   to: Date,
-  window: BusinessWindow = getBusinessWindow()
+  window: BusinessWindow = getBusinessWindow(),
+  closed?: ClosedDays
 ): number {
   assertValidDate(from, 'from');
   assertValidDate(to, 'to');
@@ -84,6 +110,20 @@ export function businessMinutesBetween(
     const close = day * DAY_MS + windowEndMs;
     return Math.max(0, Math.min(close, toLocal) - Math.max(open, fromLocal));
   };
+
+  const hasClosedDays = !!closed && ((closed.dates?.size ?? 0) > 0 || (closed.weekdays?.size ?? 0) > 0);
+  if (hasClosedDays) {
+    for (const wd of closed!.weekdays ?? []) {
+      if (!Number.isInteger(wd) || wd < 0 || wd > 6) throw new RangeError(`Invalid weekday ${wd}`);
+    }
+    const isClosed = (day: number) =>
+      (closed!.weekdays?.has(localWeekday(day)) ?? false) || (closed!.dates?.has(localDayKey(day)) ?? false);
+    let ms = 0;
+    for (let day = firstDay; day <= lastDay; day++) {
+      if (!isClosed(day)) ms += overlapOnDay(day);
+    }
+    return Math.floor(ms / MINUTE_MS);
+  }
 
   let totalMs: number;
   if (firstDay === lastDay) {

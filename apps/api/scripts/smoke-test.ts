@@ -621,15 +621,26 @@ async function runSmokeTests() {
     { status: 'REPAIRING', note: 'Customer reported minor leak after repair' },
     { headers: adminHeaders }
   );
+  // Phase 5b (owner decision): a rework is reserved like a new job and must be accepted
+  // (previously the technician was set BUSY silently, without any notification).
+  const reservedRework = await prisma.repairOrder.findUnique({ where: { id: order.id } });
+  if (reservedRework?.status !== 'NEW' || !reservedRework.technicianId || reservedRework.acknowledgedAt !== null) {
+    throw new Error('Rework was not reserved for a technician');
+  }
+  const reservedTech = await prisma.employee.findUnique({ where: { id: reservedRework.technicianId } });
+  if (reservedTech?.status !== 'RESERVED') {
+    throw new Error('Rework technician was not RESERVED');
+  }
+  await axios.post(`${API_BASE}/repairs/${order.id}/accept`, {}, { headers: adminHeaders });
   const reworkOrder = await prisma.repairOrder.findUnique({ where: { id: order.id } });
-  if (reworkOrder?.status !== 'REPAIRING' || !reworkOrder.technicianId) {
+  if (reworkOrder?.status !== 'REPAIRING' || reworkOrder.technicianId !== reservedRework.technicianId) {
     throw new Error('Rework assignment failed');
   }
-  const reworkTech = await prisma.employee.findUnique({ where: { id: reworkOrder.technicianId } });
+  const reworkTech = await prisma.employee.findUnique({ where: { id: reworkOrder.technicianId! } });
   if (reworkTech?.status !== 'BUSY') {
     throw new Error('Rework technician was not marked BUSY');
   }
-  console.log(`Rework order resumed to REPAIRING with Tech ${reworkTech.name} set to BUSY.`);
+  console.log(`Rework reserved for Tech ${reworkTech.name}, accepted, resumed to REPAIRING (technician BUSY).`);
 
   // Complete and Deliver
   await axios.patch(

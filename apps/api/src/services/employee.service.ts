@@ -37,6 +37,7 @@ export class EmployeeService {
         role: true,
         status: true,
         isActive: true,
+        weeklyDayOff: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -54,6 +55,7 @@ export class EmployeeService {
         role: true,
         status: true,
         isActive: true,
+        weeklyDayOff: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -69,7 +71,7 @@ export class EmployeeService {
    */
   static async updateEmployee(
     id: number,
-    data: { name?: string; role?: EmployeeRole; isActive?: boolean },
+    data: { name?: string; role?: EmployeeRole; isActive?: boolean; weeklyDayOff?: number | null },
     actorId: number
   ) {
     const employee = await prisma.employee.findUnique({
@@ -87,6 +89,7 @@ export class EmployeeService {
     const updateData: Prisma.EmployeeUpdateInput = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.role !== undefined) updateData.role = data.role;
+    if (data.weeklyDayOff !== undefined) updateData.weeklyDayOff = data.weeklyDayOff;
     if (data.isActive !== undefined) {
       updateData.isActive = data.isActive;
     }
@@ -113,6 +116,7 @@ export class EmployeeService {
           role: true,
           status: true,
           isActive: true,
+          weeklyDayOff: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -229,6 +233,7 @@ export class EmployeeService {
         role: true,
         status: true,
         isActive: true,
+        weeklyDayOff: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -255,6 +260,7 @@ export class EmployeeService {
         role: true,
         status: true,
         isActive: true,
+        weeklyDayOff: true,
         createdAt: true,
         updatedAt: true,
       },

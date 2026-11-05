@@ -28,6 +28,12 @@ const STAGE_LABELS: Record<'NEW' | 'INSPECTING' | 'WAITING_APPROVAL' | 'REPAIRIN
 export function renderNotification(event: NotificationEvent): RenderedNotification {
   switch (event.type) {
     case 'JOB_RESERVED':
+      if (event.rework) {
+        return {
+          title: 'มีงานตีกลับซ่อมใหม่รอคุณกดรับ',
+          body: `ใบงาน ${event.jobNumber} (เครื่อง ${machineText(event.machine)}) ถูกตีกลับมาซ่อมใหม่และจ่ายให้คุณแล้ว กรุณากดรับงาน`,
+        };
+      }
       return {
         title: 'มีงานซ่อมใหม่รอคุณกดรับ',
         body: `ใบงาน ${event.jobNumber} (เครื่อง ${machineText(event.machine)}) ถูกจ่ายให้คุณแล้ว กรุณากดรับงาน`,

@@ -95,6 +95,8 @@ export class AssignmentService {
             jobNumber: order.jobNumber,
             technicianId: tech.id,
             machine: order.machine,
+            // A finished job sent back for rework keeps its completion summary
+            rework: order.completionSummary !== null,
           };
         });
 
@@ -110,6 +112,7 @@ export class AssignmentService {
           repairOrderId: result.orderId,
           jobNumber: result.jobNumber,
           machine: result.machine,
+          ...(result.rework ? { rework: true } : {}),
         });
       } catch (err: any) {
         if (err.message === 'TECH_BUSY_RETRY') {

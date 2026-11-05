@@ -279,8 +279,28 @@ export const completeRepairSchema = z
       .min(1, 'completionSummary is required')
       .max(2000, 'completionSummary cannot exceed 2000 characters'),
     helperTechnicianIds: helperIdsSchema.optional(),
+    // NOT_REPAIRED: customer declined the repair; the machine is returned (owner decision 2026-11-05)
+    outcome: z.enum(['REPAIRED', 'NOT_REPAIRED']).optional(),
   })
   .strict();
+
+/** Payment received from the customer (record only). */
+export const paymentSchema = z
+  .object({
+    amount: z
+      .number({ invalid_type_error: 'amount must be a number' })
+      .min(0, 'amount cannot be negative')
+      .max(99_999_999.99, 'amount is too large')
+      .refine((v) => Number.isInteger(Math.round(v * 100)) && Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, {
+        message: 'amount can have at most 2 decimal places',
+      }),
+    method: z.enum(['CASH', 'TRANSFER', 'OTHER'], {
+      errorMap: () => ({ message: 'method must be CASH, TRANSFER or OTHER' }),
+    }),
+    note: z.string().trim().max(500, 'note cannot exceed 500 characters').optional(),
+  })
+  .strict();
+export type PaymentInput = z.infer<typeof paymentSchema>;
 
 /** PUT /api/repairs/:id/helpers */
 export const setHelpersSchema = z
@@ -302,6 +322,8 @@ export const updateRepairStatusSchema = z.object({
     errorMap: () => ({ message: 'Invalid repair order status' }),
   }),
   note: z.string().trim().optional(),
+  // Only with status DELIVERED: payment received at handover (optional, record only)
+  payment: paymentSchema.optional(),
 });
 
 export const getRepairsQuerySchema = z.object({

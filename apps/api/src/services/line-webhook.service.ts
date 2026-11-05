@@ -192,7 +192,8 @@ export class LineWebhookService {
 
   static async notifyCustomerStatusChange(
     repairOrderId: number,
-    status: 'COMPLETED' | 'DELIVERED'
+    status: 'COMPLETED' | 'DELIVERED',
+    options: { outcome?: 'REPAIRED' | 'NOT_REPAIRED' } = {}
   ): Promise<void> {
     try {
       const order = await prisma.repairOrder.findUnique({
@@ -203,7 +204,9 @@ export class LineWebhookService {
       if (!order?.customer?.lineUserId) return;
 
       let notificationText = '';
-      if (status === 'COMPLETED') {
+      if (status === 'COMPLETED' && options.outcome === 'NOT_REPAIRED') {
+        notificationText = `แจ้งเตือนสถานะงานซ่อม: ใบงาน ${order.jobNumber} (${order.machine.brand} ${order.machine.model}) ตรวจเช็คเรียบร้อยแล้ว ไม่ได้ดำเนินการซ่อมตามที่ท่านแจ้งไว้ ท่านสามารถมารับเครื่องคืนได้ที่ร้าน`;
+      } else if (status === 'COMPLETED') {
         notificationText = `แจ้งเตือนสถานะงานซ่อม: ใบงาน ${order.jobNumber} (${order.machine.brand} ${order.machine.model}) ซ่อมเสร็จสมบูรณ์แล้วครับ ท่านสามารถมารับเครื่องได้ที่ร้าน`;
       } else if (status === 'DELIVERED') {
         notificationText = `แจ้งเตือนสถานะงานซ่อม: ใบงาน ${order.jobNumber} ส่งมอบเครื่องเรียบร้อยแล้ว ขอบพระคุณที่ไว้วางใจใช้บริการ หอมไกล เซอร์วิส ครับ`;
