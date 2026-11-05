@@ -153,6 +153,17 @@ pnpm --filter @homglai/api create-admin
 | `TEST_DB_PASSWORD` | ไม่บังคับ | รหัสผ่านสำหรับฐานข้อมูลทดสอบ (Default: อ่านจาก `MYSQL_ROOT_PASSWORD` หรือ `root`) | `your-secure-mysql-root-password` |
 | `TEST_DB_HOST` | ไม่บังคับ | โฮสต์ของฐานข้อมูลทดสอบ (Default: `127.0.0.1`) | `127.0.0.1` |
 | `TEST_DB_PORT` | ไม่บังคับ | พอร์ตของฐานข้อมูลทดสอบ (Default: `3307`) | `3307` |
+| `ACK_TIMEOUT_MINUTES` | ไม่บังคับ | นาทีที่ช่างไม่กดรับงานแล้วเริ่มเตือน ADMIN (Default: `60`) | `60` |
+| `ACK_REMINDER_INTERVAL_MINUTES` | ไม่บังคับ | เตือน ADMIN ซ้ำทุกกี่นาทีเมื่อช่างยังไม่กดรับงาน (Default: `60`) | `60` |
+| `PROGRESS_REMINDER_INTERVAL_MINUTES` | ไม่บังคับ | นาทีเวลาทำการที่ใบงานนิ่งแล้วถามช่างเรื่องความคืบหน้า (Default: `60`) | `60` |
+| `PROGRESS_UNANSWERED_ADMIN_THRESHOLD` | ไม่บังคับ | ช่างไม่ตอบครบกี่รอบจึงแจ้ง ADMIN (Default: `3`) | `3` |
+| `BUSINESS_HOURS_START` / `BUSINESS_HOURS_END` | ไม่บังคับ | เวลาทำการ (เวลาไทย, `HH:MM`, ทุกวัน) (Default: `08:00` / `17:30`) | `08:00` |
+| `IMAGE_RETENTION_DAYS` | ไม่บังคับ | ลบรูปหลังใบงานปิดกี่วัน (Default: `30`) | `30` |
+| `JOB_WORKER_INTERVAL_SECONDS` / `JOBS_ENABLED` | ไม่บังคับ | รอบการทำงานเบื้องหลัง (วินาที) และเปิด/ปิด (Default: `60` / `true`) | `60` |
+| `CUSTOMER_LINE_APPROVAL_ENABLED` | ไม่บังคับ | เปิดให้ลูกค้าอนุมัติราคาผ่าน LINE (Default: `false`) | `false` |
+| `PUBLIC_SEARCH_RATE_LIMIT_MAX` | ไม่บังคับ | จำนวนครั้งค้นหาสาธารณะต่อ IP ต่อ 15 นาที (Default: `30`) | `30` |
+| `IMAGE_STORAGE_DIR` / `IMAGE_MAX_BYTES` / `IMAGE_MAX_PER_KIND` / `IMAGE_MAX_LONG_EDGE` | ไม่บังคับ | ที่เก็บรูปและข้อจำกัดรูป (Default: `./data/uploads` / `5242880` / `10` / `1600`) | `./data/uploads` |
+| `NOTIFIER_DRIVER` | ไม่บังคับ | ช่องทางแจ้งเตือนพนักงาน ตอนนี้รองรับ `db` (แสดงในเว็บ) (Default: `db`) | `db` |
 
 ---
 
@@ -171,11 +182,14 @@ pnpm --filter @homglai/api create-admin
 | `POST` | `/api/employees/:id/reset-password` | `ADMIN` | รีเซ็ตรหัสผ่านพนักงานเป็นค่าใหม่ |
 | `PATCH` | `/api/employees/:id/status` | `ADMIN`, เจ้าของบัญชี | อัปเดตสถานะการทำงานพนักงาน (`AVAILABLE`, `BUSY`, `OFFLINE`) พร้อมทริกเกอร์ระบบจัดคิวงานอัตโนมัติ (ช่างจะไม่ได้รับ `trackingToken` ใน `assignedOrder`) |
 | `POST` | `/api/repairs` | `RECEPTIONIST`, `ADMIN` | สร้างใบสั่งซ่อมใหม่ (สถานะเริ่มต้น `NEW`), บันทึกข้อมูลลูกค้า, เครื่อง และอาการเสีย พร้อมจัดคิวช่างอัตโนมัติหากมีช่างว่าง |
-| `GET` | `/api/repairs` | ทุก Role (Authenticated) | ค้นหาและแบ่งหน้าใบสั่งซ่อม (รองรับ Query: `status`, `technicianId`, `search` สูงสุด 100 ตัวอักษร, `page`, `limit`; ช่างเห็นเฉพาะงานตนเองและงาน `NEW`) |
+| `GET` | `/api/repairs` | ทุก Role (Authenticated) | ค้นหาและแบ่งหน้าใบสั่งซ่อม (รองรับ Query: `status`, `technicianId`, `search` สูงสุด 100 ตัวอักษร, `page`, `limit`; ค้นด้วยเลขใบงาน/เลขใบกระดาษ/เลขเล่ม/เบอร์/ชื่อลูกค้า; ช่างเห็นเฉพาะงานที่จ่ายให้ตนเอง ไม่เห็นงาน `NEW` ที่ยังไม่มีเจ้าของ) |
 | `GET` | `/api/repairs/:id` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | ดูรายละเอียดใบสั่งซ่อมแบบเจาะลึก (ช่างไม่ได้รับ `trackingToken`, ทุก Role ไม่ได้รับ `customer.lineUserId` แต่ได้ `customer.lineLinked`) |
+| `PATCH` | `/api/repairs/:id` | `RECEPTIONIST`, `ADMIN` | แก้ข้อมูลรับเครื่อง (ใบกระดาษ/ลูกค้า/เครื่อง/อาการ/ประกัน/อุปกรณ์ ฯลฯ) ห้ามแก้สถานะ/ช่าง/เลขใบงาน และห้ามแก้ใบงานที่ปิดแล้ว |
 | `POST` | `/api/repairs/:id/items` | `ADMIN`, ช่างที่รับผิดชอบ | เพิ่มรายการเสนอราคาอะไหล่/บริการ (เปลี่ยนสถานะใบซ่อมเป็น `WAITING_APPROVAL` อัตโนมัติ, ช่างไม่ได้รับ `trackingToken`) |
 | `PATCH` | `/api/repairs/:id/items/:itemId/status` | `RECEPTIONIST`, `ADMIN` | อนุมัติ (`APPROVED`) หรือปฏิเสธ (`REJECTED`) รายการซ่อมในฐานะตัวแทนลูกค้า |
 | `PATCH` | `/api/repairs/:id/items/:itemId/complete` | `ADMIN`, ช่างที่รับผิดชอบ | ทำเครื่องหมายรายการซ่อมที่อนุมัติแล้วว่าดำเนินการซ่อมเสร็จสิ้น (`COMPLETED`, ช่างไม่ได้รับ `trackingToken`) |
+| `GET` | `/api/notifications` | ทุก Role (Authenticated) | แจ้งเตือนของตนเองในเว็บ (Query: `unreadOnly`, `page`, `limit`) |
+| `PATCH` | `/api/notifications/:id/read` | เจ้าของแจ้งเตือน | ทำเครื่องหมายว่าอ่านแล้ว (ของคนอื่นตอบ 404) |
 | `PATCH` | `/api/repairs/:id/status` | ทุก Role (ตามเงื่อนไข State Machine) | เปลี่ยนสถานะใบสั่งซ่อม (ช่างเปลี่ยนได้เฉพาะงานตนเอง, ช่างไม่ได้รับ `trackingToken`, `ADMIN`/`RECEPTIONIST` ได้รับตามปกติ) |
 | `GET` | `/api/symptoms` | ทุก Role (Authenticated) | ดึงรายการหมวดหมู่อาการเสียและอาการเสียย่อยทั้งหมด |
 | `GET` | `/api/tracking/stream/:trackingToken` | Public | สตรีมสถานะงานซ่อมแบบเรียลไทม์ด้วย Server-Sent Events (SSE) โดยใช้ `trackingToken` ของใบสั่งซ่อม |

@@ -14,6 +14,9 @@
     "test:timezone": "tsx scripts/test-timezone.ts",
     "test:migration": "tsx scripts/test-safe-migration.ts",
     "test:intake": "tsx scripts/test-intake-v2.ts",
+    "test:business-hours": "tsx scripts/test-business-hours.ts",
+    "test:config": "tsx scripts/test-config.ts",
+    "test:notifications": "tsx scripts/test-notifications.ts",
     "test:all": "node scripts/test-runner.js"
   },
   "dependencies": {

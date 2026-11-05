@@ -107,20 +107,29 @@ async function run() {
     await waitForHealth();
     console.log('>>> [Test Runner] API Server is READY!\n');
 
-    console.log('>>> [Test Runner] 1/5 Running Timezone Rollover Tests...');
+    console.log('>>> [Test Runner] 1/8 Running Timezone Rollover Tests...');
     execSync(`${pnpmCmd} test:timezone`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 2/5 Running Safe 3-Step Migration Test (>= 5 Rows Legacy Data)...');
+    console.log('\n>>> [Test Runner] 2/8 Running Business Hours Unit Tests...');
+    execSync(`${pnpmCmd} test:business-hours`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 3/8 Running Config Validation Unit Tests...');
+    execSync(`${pnpmCmd} test:config`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 4/8 Running Safe 3-Step Migration Test (>= 5 Rows Legacy Data)...');
     execSync(`${pnpmCmd} test:migration`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 3/5 Running Comprehensive Smoke Tests (Positive & Negative)...');
+    console.log('\n>>> [Test Runner] 5/8 Running Comprehensive Smoke Tests (Positive & Negative)...');
     execSync(`${pnpmCmd} test:smoke`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 4/5 Running High-Concurrency & Contention Tests (20 Rounds & Race Tests)...');
+    console.log('\n>>> [Test Runner] 6/8 Running High-Concurrency & Contention Tests (20 Rounds & Race Tests)...');
     execSync(`${pnpmCmd} test:concurrency`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 5/5 Running Phase 2 Intake / RepairItem v2 / Visibility Tests...');
+    console.log('\n>>> [Test Runner] 7/8 Running Phase 2 Intake / RepairItem v2 / Visibility Tests...');
     execSync(`${pnpmCmd} test:intake`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 8/8 Running Phase 3 Notifier / Notifications Tests...');
+    execSync(`${pnpmCmd} test:notifications`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
     console.log('\n=============================================================');
     console.log('>>> [Test Runner] ALL TEST SUITES PASSED WITH 100% SUCCESS! <<<');

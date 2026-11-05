@@ -6,19 +6,23 @@ import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger';
 import prisma from '@homglai/db';
-import { getCorsOrigins, getJwtSecret } from './config/env';
+import { getAppConfig, getCorsOrigins, getJwtSecret } from './config/env';
 import authRoutes from './routes/auth.routes';
 import repairRoutes from './routes/repair.routes';
 import trackingRoutes from './routes/tracking.routes';
 import employeeRoutes from './routes/employee.routes';
 import webhookRoutes from './routes/webhook.routes';
 import symptomRoutes from './routes/symptom.routes';
+import notificationRoutes from './routes/notification.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 
 dotenv.config();
 
 // Enforce JWT_SECRET requirement on startup
 getJwtSecret();
+
+// Validate all application settings on startup (fails fast with a list of invalid variables)
+getAppConfig();
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -87,6 +91,7 @@ app.use('/api/tracking', trackingRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/webhook', webhookRoutes);
 app.use('/api/symptoms', symptomRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Catch 404 for any unhandled routes
 app.use(notFoundHandler);
