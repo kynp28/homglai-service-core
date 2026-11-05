@@ -262,7 +262,32 @@ export const resolveRepairItemSchema = z.object({
   status: z.enum(['APPROVED', 'REJECTED'], {
     errorMap: () => ({ message: 'Status must be APPROVED or REJECTED' }),
   }),
+  /** Short evidence of the phone call, e.g. "โทรคุยกับเจ้าของร้าน 14:20" */
+  note: optionalText(500, 'note'),
 });
+
+const helperIdsSchema = z
+  .array(z.number().int().positive('Helper technician ID must be a positive integer'))
+  .max(10, 'At most 10 helper technicians are allowed');
+
+/** POST /api/repairs/:id/complete */
+export const completeRepairSchema = z
+  .object({
+    completionSummary: z
+      .string()
+      .trim()
+      .min(1, 'completionSummary is required')
+      .max(2000, 'completionSummary cannot exceed 2000 characters'),
+    helperTechnicianIds: helperIdsSchema.optional(),
+  })
+  .strict();
+
+/** PUT /api/repairs/:id/helpers */
+export const setHelpersSchema = z
+  .object({
+    technicianIds: helperIdsSchema,
+  })
+  .strict();
 
 export const updateRepairStatusSchema = z.object({
   status: z.enum([
@@ -305,6 +330,12 @@ export const getRepairsQuerySchema = z.object({
     .trim()
     .max(100, 'Search query cannot exceed 100 characters')
     .optional(),
+  needsProgressUpdate: z
+    .preprocess(
+      (val) => (val === '' || val === undefined ? undefined : val),
+      z.enum(['true', 'false'], { errorMap: () => ({ message: 'needsProgressUpdate must be true or false' }) }).optional()
+    )
+    .transform((val) => val === 'true'),
   awaitingAck: z
     .preprocess(
       (val) => (val === '' || val === undefined ? undefined : val),

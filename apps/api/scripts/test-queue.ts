@@ -71,6 +71,7 @@ async function resetWorld() {
   await prisma.statusLog.deleteMany({});
   await prisma.repairItem.deleteMany({});
   await prisma.repairOrderSymptom.deleteMany({});
+  await prisma.repairOrderHelper.deleteMany({});
   await prisma.repairOrder.deleteMany({});
   await prisma.employee.updateMany({
     where: { id: { in: TECHS } },

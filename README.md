@@ -174,7 +174,7 @@ pnpm --filter @homglai/api create-admin
 | Method | Path | Role ที่เรียกได้ | คำอธิบาย |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | Public | ตรวจสอบสถานะการทำงานของ Server และการเชื่อมต่อฐานข้อมูล |
-| `POST` | `/api/auth/login` | Public (Rate Limited) | เข้าสู่ระบบพนักงาน ตรวจสอบ Username/Password และคืนค่า JWT Token (จำกัด 5 ครั้งต่อ 15 นาทีต่อ IP) |
+| `POST` | `/api/auth/login` | Public (Rate Limited) | เข้าสู่ระบบพนักงาน ตรวจสอบ Username/Password และคืนค่า JWT Token (จำกัด 10 ครั้งต่อ 15 นาทีต่อ IP) |
 | `POST` | `/api/auth/change-password` | ทุก Role (Authenticated) | เปลี่ยนรหัสผ่านของตนเอง (ต้องระบุ `oldPassword` และ `newPassword` อย่างน้อย 12 ตัวอักษร) |
 | `POST` | `/api/employees` | `ADMIN` | สร้างบัญชีพนักงานใหม่ (ระบุ username, name, password, role) |
 | `GET` | `/api/employees` | `ADMIN` | ดึงรายชื่อพนักงานทั้งหมดในระบบ |
@@ -182,17 +182,20 @@ pnpm --filter @homglai/api create-admin
 | `POST` | `/api/employees/:id/reset-password` | `ADMIN` | รีเซ็ตรหัสผ่านพนักงานเป็นค่าใหม่ |
 | `PATCH` | `/api/employees/:id/status` | `ADMIN`, เจ้าของบัญชี | อัปเดตสถานะการทำงานพนักงาน (`AVAILABLE`, `BUSY`, `OFFLINE`) พร้อมทริกเกอร์ระบบจัดคิวงานอัตโนมัติ (`assignedOrder` รวมงานที่จองไว้รอกดรับ, ช่างที่ `RESERVED` เปลี่ยนสถานะเองไม่ได้ ตอบ 409, ช่างจะไม่ได้รับ `trackingToken`) |
 | `POST` | `/api/repairs` | `RECEPTIONIST`, `ADMIN` | สร้างใบสั่งซ่อมใหม่ (สถานะเริ่มต้น `NEW`), บันทึกข้อมูลลูกค้า, เครื่อง และอาการเสีย พร้อมจัดคิวช่างอัตโนมัติหากมีช่างว่าง |
-| `GET` | `/api/repairs` | ทุก Role (Authenticated) | ค้นหาและแบ่งหน้าใบสั่งซ่อม (รองรับ Query: `status`, `technicianId`, `search` สูงสุด 100 ตัวอักษร, `page`, `limit`; ค้นด้วยเลขใบงาน/เลขใบกระดาษ/เลขเล่ม/เบอร์/ชื่อลูกค้า; ช่างเห็นเฉพาะงานที่จ่ายให้ตนเอง ไม่เห็นงาน `NEW` ที่ยังไม่มีเจ้าของ; `awaitingAck=true` = งานที่จ่ายแล้วรอกดรับ พร้อม `assignedAt`, `waitingMinutes`) |
+| `GET` | `/api/repairs` | ทุก Role (Authenticated) | ค้นหาและแบ่งหน้าใบสั่งซ่อม (รองรับ Query: `status`, `technicianId`, `search` สูงสุด 100 ตัวอักษร, `page`, `limit`; ค้นด้วยเลขใบงาน/เลขใบกระดาษ/เลขเล่ม/เบอร์/ชื่อลูกค้า; ช่างเห็นเฉพาะงานที่จ่ายให้ตนเอง ไม่เห็นงาน `NEW` ที่ยังไม่มีเจ้าของ; `awaitingAck=true` = งานที่จ่ายแล้วรอกดรับ พร้อม `assignedAt`, `waitingMinutes`; `needsProgressUpdate=true` = งานที่ต้องอัปเดต (นิ่งเกินกำหนดในเวลาทำการ) พร้อม `idleBusinessMinutes`) |
 | `GET` | `/api/repairs/:id` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | ดูรายละเอียดใบสั่งซ่อมแบบเจาะลึก (ช่างไม่ได้รับ `trackingToken`, ทุก Role ไม่ได้รับ `customer.lineUserId` แต่ได้ `customer.lineLinked`) |
 | `PATCH` | `/api/repairs/:id` | `RECEPTIONIST`, `ADMIN` | แก้ข้อมูลรับเครื่อง (ใบกระดาษ/ลูกค้า/เครื่อง/อาการ/ประกัน/อุปกรณ์ ฯลฯ) ห้ามแก้สถานะ/ช่าง/เลขใบงาน และห้ามแก้ใบงานที่ปิดแล้ว |
 | `POST` | `/api/repairs/:id/accept` | ช่างที่ได้รับจ่าย, `ADMIN` (กดแทน) | กดรับงานที่จองไว้ (`NEW` → `INSPECTING`, ช่าง `RESERVED` → `BUSY`; งานที่ถูกส่งกลับจากช่างที่ลาออกจะกลับไปขั้นที่ค้าง) |
 | `POST` | `/api/repairs/:id/release` | `ADMIN` | ปล่อยงานที่จองไว้แต่ยังไม่กดรับคืนกองกลาง (ช่างกลับ `AVAILABLE`) แล้วรันคิวใหม่ |
+| `POST` | `/api/repairs/:id/complete` | ช่างที่ได้รับจ่าย, `ADMIN` | ส่งงานซ่อม (`REPAIRING` → `COMPLETED`) พร้อม `completionSummary` และเลือก `helperTechnicianIds` (ช่างผู้ช่วย ไม่บังคับ) ช่างกลับว่างและรับงานถัดไป |
+| `POST` | `/api/repairs/:id/still-working` | ช่างที่ได้รับจ่าย, `ADMIN` | ปุ่ม "ยังซ่อมอยู่" รีเซ็ตตัวจับเวลาเตือนความคืบหน้า |
+| `PUT` | `/api/repairs/:id/helpers` | `RECEPTIONIST`, `ADMIN` | แก้รายชื่อช่างผู้ช่วยของใบงาน (บันทึกไว้ดูอย่างเดียว) จนกว่าจะส่งมอบ/ยกเลิก |
 | `POST` | `/api/repairs/:id/items` | `ADMIN`, ช่างที่รับผิดชอบ | เพิ่มรายการเสนอราคาอะไหล่/บริการ (เปลี่ยนสถานะใบซ่อมเป็น `WAITING_APPROVAL` อัตโนมัติ, ช่างไม่ได้รับ `trackingToken`) |
-| `PATCH` | `/api/repairs/:id/items/:itemId/status` | `RECEPTIONIST`, `ADMIN` | อนุมัติ (`APPROVED`) หรือปฏิเสธ (`REJECTED`) รายการซ่อมในฐานะตัวแทนลูกค้า |
+| `PATCH` | `/api/repairs/:id/items/:itemId/status` | `RECEPTIONIST`, `ADMIN`, ช่างที่ได้รับจ่าย | บันทึกผลยืนยันราคาทางโทรศัพท์รายรายการ (`APPROVED`/`REJECTED` + `note` ≤500) ระบบเก็บผู้กด เวลา ช่องทาง `PHONE` |
 | `PATCH` | `/api/repairs/:id/items/:itemId/complete` | `ADMIN`, ช่างที่รับผิดชอบ | ทำเครื่องหมายรายการซ่อมที่อนุมัติแล้วว่าดำเนินการซ่อมเสร็จสิ้น (`COMPLETED`, ช่างไม่ได้รับ `trackingToken`) |
 | `GET` | `/api/notifications` | ทุก Role (Authenticated) | แจ้งเตือนของตนเองในเว็บ (Query: `unreadOnly`, `page`, `limit`) |
 | `PATCH` | `/api/notifications/:id/read` | เจ้าของแจ้งเตือน | ทำเครื่องหมายว่าอ่านแล้ว (ของคนอื่นตอบ 404) |
-| `PATCH` | `/api/repairs/:id/status` | ทุก Role (ตามเงื่อนไข State Machine) | เปลี่ยนสถานะใบสั่งซ่อม (ช่างเปลี่ยนได้เฉพาะงานตนเอง, ช่างไม่ได้รับ `trackingToken`, `ADMIN`/`RECEPTIONIST` ได้รับตามปกติ) |
+| `PATCH` | `/api/repairs/:id/status` | ทุก Role (ตามเงื่อนไข State Machine) | เปลี่ยนสถานะใบสั่งซ่อม (ช่างเปลี่ยนได้เฉพาะงานตนเอง, ช่างไม่ได้รับ `trackingToken`, `ADMIN`/`RECEPTIONIST` ได้รับตามปกติ; ตีกลับ `COMPLETED`→`REPAIRING` ถ้าไม่มีช่างว่าง งานกลับเข้าคิวลำดับแรกเป็น `NEW` และช่างคนถัดไปที่ว่างได้รับ แทนการตอบ 409) |
 | `GET` | `/api/symptoms` | ทุก Role (Authenticated) | ดึงรายการหมวดหมู่อาการเสียและอาการเสียย่อยทั้งหมด |
 | `GET` | `/api/tracking/stream/:trackingToken` | Public | สตรีมสถานะงานซ่อมแบบเรียลไทม์ด้วย Server-Sent Events (SSE) โดยใช้ `trackingToken` ของใบสั่งซ่อม |
 | `POST` | `/api/webhook/line` | Public (ตรวจสอบ Signature) | รับ Webhook Event จาก LINE Messaging API สำหรับการผูกบัญชี LINE ลูกค้า และการกดปุ่มอนุมัติ/ปฏิเสธใบเสนอราคาผ่าน Postback |

@@ -96,6 +96,7 @@ const EXPECTED_MIGRATIONS: { dir: string; label: string }[] = [
   { dir: '20261104121100_add_auth_and_tracking_token',        label: 'Auth & trackingToken (3-step)' },
   { dir: '20261104130000_optional_status_log_changed_by',     label: 'Optional StatusLog.changedById' },
   { dir: '20261105140000_srs_v2_schema_additions',            label: 'SRS v2 schema additions (3-step)' },
+  { dir: '20261105170000_repair_order_helpers',                label: 'RepairOrderHelper table (additive)' },
 ];
 
 const migrationsRoot = path.resolve(__dirname, '../../../packages/db/prisma/migrations');
@@ -151,7 +152,7 @@ function runEmptyDatabaseScenario(): void {
     applyMigration(i, EMPTY_DB);
   }
 
-  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification']) {
+  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification', 'RepairOrderHelper']) {
     if (!tableExists(t, EMPTY_DB)) throw new Error(`ASSERTION FAILED: [Empty DB] table ${t} must exist`);
   }
   const receivedDateNullable = queryScalar(
@@ -296,8 +297,11 @@ VALUES
   // -------------------------------------------------------------------
   // Step 4: Apply Migration 4 (SRS v2 — the target of this test)
   // -------------------------------------------------------------------
-  console.log('[Step 4] SRS v2 migration (target of this test)');
+  console.log('[Step 4] SRS v2 migration (target of this test) + later additive migrations');
   applyMigration(3, LEGACY_DB);
+  for (let i = 4; i < EXPECTED_MIGRATIONS.length; i++) {
+    applyMigration(i, LEGACY_DB);
+  }
   console.log('');
 
   // -------------------------------------------------------------------
@@ -458,11 +462,11 @@ VALUES
   console.log('  [PASS] lastActivityAt = updatedAt; queuePriority & reminder counters = 0; workType = REPAIR.');
 
   // --- 5j: New tables exist and are empty ---
-  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification']) {
+  for (const t of ['RepairOrderImage', 'OrderLineSubscription', 'Notification', 'RepairOrderHelper']) {
     if (!tableExists(t, LEGACY_DB)) throw new Error(`ASSERTION FAILED: table ${t} must exist`);
     assertEq(count(t, LEGACY_DB), 0, `${t} starts empty`);
   }
-  console.log('  [PASS] New tables exist and are empty: RepairOrderImage, OrderLineSubscription, Notification.');
+  console.log('  [PASS] New tables exist and are empty: RepairOrderImage, OrderLineSubscription, Notification, RepairOrderHelper.');
 
   // --- 5k: New enum value RESERVED accepted ---
   runMysql("UPDATE `Employee` SET `status` = 'RESERVED' WHERE `id` = 3; UPDATE `Employee` SET `status` = 'AVAILABLE' WHERE `id` = 3;", LEGACY_DB);
@@ -496,6 +500,8 @@ VALUES
     'RepairOrderImage_repairOrderId_kind_idx',
     'OrderLineSubscription_lineUserId_idx',
     'Notification_recipientId_readAt_createdAt_idx',
+    'RepairOrderHelper_repairOrderId_technicianId_key',
+    'RepairOrderHelper_technicianId_idx',
   ];
   for (const idx of requiredIndexes) {
     const n = queryScalar(

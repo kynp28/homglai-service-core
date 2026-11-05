@@ -6,6 +6,8 @@ import {
   updateRepairOrderSchema,
   addRepairItemSchema,
   resolveRepairItemSchema,
+  completeRepairSchema,
+  setHelpersSchema,
   updateRepairStatusSchema,
   getRepairsQuerySchema,
 } from '../validators/repair.validator';
@@ -128,9 +130,14 @@ export class RepairController {
         throw new AppError(400, 'Invalid repair order or item ID');
       }
 
-      const { status } = resolveRepairItemSchema.parse(req.body);
+      const { status, note } = resolveRepairItemSchema.parse(req.body);
 
-      const result = await RepairService.resolveRepairItem(repairOrderId, itemId, status);
+      // Price confirmed by phone (SRS 3.4); ownership for TECHNICIAN is checked inside the service
+      const result = await RepairService.resolveRepairItem(repairOrderId, itemId, status, {
+        channel: 'PHONE',
+        actor: { id: req.user!.employeeId, role: req.user!.role },
+        note: note ?? null,
+      });
       res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);
@@ -169,6 +176,9 @@ export class RepairController {
         if (order.technicianId !== userId) {
           throw new AppError(403, 'Forbidden: You are not the assigned technician for this order');
         }
+        if (status === 'COMPLETED') {
+          throw new AppError(403, 'Forbidden: Technicians submit finished work with POST /api/repairs/:id/complete');
+        }
       }
 
       const updatedOrder = await RepairService.updateStatus(id, status, { id: userId, role: req.user!.role }, note);
@@ -189,6 +199,7 @@ export class RepairController {
         technicianId: query.technicianId,
         search: query.search,
         awaitingAck: query.awaitingAck,
+        needsProgressUpdate: query.needsProgressUpdate,
         page: query.page,
         limit: query.limit,
       });
@@ -207,6 +218,50 @@ export class RepairController {
         throw new AppError(400, 'Invalid repair order ID');
       }
       const order = await RepairService.acceptOrder(id, { id: req.user!.employeeId, role: req.user!.role });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /api/repairs/:id/complete — assigned TECHNICIAN or ADMIN (route enforces roles). */
+  static async complete(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+      const body = completeRepairSchema.parse(req.body);
+      const order = await RepairService.completeOrder(id, { id: req.user!.employeeId, role: req.user!.role }, body);
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /api/repairs/:id/still-working — assigned TECHNICIAN or ADMIN (route enforces roles). */
+  static async stillWorking(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+      const order = await RepairService.stillWorking(id, { id: req.user!.employeeId, role: req.user!.role });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** PUT /api/repairs/:id/helpers — RECEPTIONIST or ADMIN (route enforces roles). */
+  static async setHelpers(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+      const { technicianIds } = setHelpersSchema.parse(req.body);
+      const order = await RepairService.setHelpers(id, { id: req.user!.employeeId, role: req.user!.role }, technicianIds);
       res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
     } catch (error) {
       next(error);

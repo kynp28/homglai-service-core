@@ -152,6 +152,10 @@ router.post('/', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairContr
  *         description: Matches jobNumber, paperReceiptNo, paperBookNo, customer phone or customer name (max 100 chars)
  *         schema: { type: string }
  *       - in: query
+ *         name: needsProgressUpdate
+ *         description: "true = active jobs (INSPECTING / WAITING_APPROVAL / REPAIRING) idle for at least PROGRESS_REMINDER_INTERVAL_MINUTES of business time; rows include idleBusinessMinutes (TECHNICIAN own, ADMIN all)"
+ *         schema: { type: string, enum: ['true', 'false'] }
+ *       - in: query
  *         name: awaitingAck
  *         description: "true = only jobs reserved for a technician but not yet accepted (ADMIN sees all, TECHNICIAN sees own)"
  *         schema: { type: string, enum: ['true', 'false'] }
@@ -330,10 +334,14 @@ router.post('/:id/items', authenticate, RepairController.addItem);
  * @openapi
  * /api/repairs/{id}/items/{itemId}/status:
  *   patch:
- *     summary: Approve or reject a repair item (Staff proxy)
+ *     summary: Record the customer's price decision for an item (phone confirmation)
  *     security:
  *       - bearerAuth: []
- *     description: Staff resolves a pending repair item on customer behalf. Accessible by RECEPTIONIST and ADMIN.
+ *     description: |
+ *       SRS 3.4: the shop confirms prices with the customer by phone and records the result per item.
+ *       Allowed: RECEPTIONIST, ADMIN, and the TECHNICIAN assigned to the order (other technicians 403).
+ *       Stores resolvedById, resolvedAt, resolutionChannel = PHONE and the optional note. When every item is
+ *       decided the order moves to REPAIRING (at least one approved) or back to INSPECTING (all rejected).
  *     parameters:
  *       - in: path
  *         name: id
@@ -357,6 +365,10 @@ router.post('/:id/items', authenticate, RepairController.addItem);
  *               status:
  *                 type: string
  *                 enum: [APPROVED, REJECTED]
+ *               note:
+ *                 type: string
+ *                 maxLength: 500
+ *                 example: "โทรคุยกับเจ้าของร้าน 14:20"
  *     responses:
  *       200:
  *         description: Item resolved successfully.
@@ -368,9 +380,111 @@ router.post('/:id/items', authenticate, RepairController.addItem);
 router.patch(
   '/:id/items/:itemId/status',
   authenticate,
-  requireRole('RECEPTIONIST', 'ADMIN'),
+  requireRole('RECEPTIONIST', 'ADMIN', 'TECHNICIAN'),
   RepairController.resolveItem
 );
+
+/**
+ * @openapi
+ * /api/repairs/{id}/complete:
+ *   post:
+ *     summary: Submit finished repair work ("ส่งงานซ่อม")
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       The assigned TECHNICIAN (or an ADMIN) completes a REPAIRING order with a summary. Every APPROVED item must be
+ *       COMPLETED first (409 with the count). Optional helperTechnicianIds records technicians who helped
+ *       (informational only, active technicians other than the owner). The technician becomes AVAILABLE when they
+ *       hold no other job and is immediately offered the next job in the queue.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [completionSummary]
+ *             properties:
+ *               completionSummary: { type: string, minLength: 1, maxLength: 2000 }
+ *               helperTechnicianIds:
+ *                 type: array
+ *                 maxItems: 10
+ *                 items: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Completed; returns the repair order details
+ *       400:
+ *         description: Invalid summary or helper technicians
+ *       403:
+ *         description: Not the assigned technician / not allowed
+ *       409:
+ *         description: Not REPAIRING, or approved items not yet completed
+ */
+router.post('/:id/complete', authenticate, requireRole('TECHNICIAN', 'ADMIN'), RepairController.complete);
+
+/**
+ * @openapi
+ * /api/repairs/{id}/still-working:
+ *   post:
+ *     summary: '"ยังซ่อมอยู่" — confirm the job is still in progress'
+ *     security:
+ *       - bearerAuth: []
+ *     description: Restarts the progress-reminder timer (lastActivityAt) and clears the unanswered counter. Assigned TECHNICIAN or ADMIN; only while INSPECTING / WAITING_APPROVAL / REPAIRING.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Timer reset; returns the repair order details
+ *       403:
+ *         description: Not the assigned technician / not allowed
+ *       409:
+ *         description: Order is not in an active work status
+ */
+router.post('/:id/still-working', authenticate, requireRole('TECHNICIAN', 'ADMIN'), RepairController.stillWorking);
+
+/**
+ * @openapi
+ * /api/repairs/{id}/helpers:
+ *   put:
+ *     summary: Set the helper technicians of a job
+ *     security:
+ *       - bearerAuth: []
+ *     description: RECEPTIONIST / ADMIN replace the list of helper technicians (informational only) until the order is DELIVERED or CANCELLED. An empty list clears it.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [technicianIds]
+ *             properties:
+ *               technicianIds:
+ *                 type: array
+ *                 maxItems: 10
+ *                 items: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Updated; returns the repair order details (helpers listed)
+ *       400:
+ *         description: Invalid technician ids (owner, inactive, not a technician)
+ *       403:
+ *         description: TECHNICIAN
+ *       409:
+ *         description: Order is DELIVERED or CANCELLED
+ */
+router.put('/:id/helpers', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairController.setHelpers);
 
 /**
  * @openapi
@@ -410,7 +524,7 @@ router.patch(
  *     summary: Update repair order status
  *     security:
  *       - bearerAuth: []
- *     description: Updates repair order status. Accessible by all authenticated roles (TECHNICIAN must be assigned technician).
+ *     description: Updates repair order status. Accessible by all authenticated roles (TECHNICIAN must be assigned technician). COMPLETED uses the same rules as POST /complete; technicians must use POST /complete (403 here).
  *     parameters:
  *       - in: path
  *         name: id

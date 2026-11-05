@@ -8,6 +8,9 @@ import { ACCEPTED_WORK_STATUSES, AssignmentService } from './assignment.service'
 import { LineWebhookService } from './line-webhook.service';
 import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
 import { computeTotalAmount, toRepairItemView } from '../utils/repair-item-view';
+import { activityFields, recordActivity } from '../utils/activity';
+import { businessMinutesBetween } from '../utils/business-hours';
+import { getAppConfig } from '../config/env';
 import {
   AddRepairItemInput,
   CreateRepairOrderInput,
@@ -23,6 +26,79 @@ export interface Actor {
 
 /** Orders in these states are closed: intake data can no longer be edited. */
 const CLOSED_STATUSES: RepairStatus[] = ['DELIVERED', 'CANCELLED'];
+
+const MAX_HELPERS = 10;
+
+/**
+ * Frees a technician (BUSY/RESERVED -> AVAILABLE, availableSince = now) when they hold no other job
+ * (reserved NEW or accepted work). Never touches OFFLINE or deactivated staff. Returns true if freed.
+ */
+async function releaseTechnicianIfIdle(
+  tx: Prisma.TransactionClient,
+  technicianId: number,
+  excludeOrderId: number,
+  now: Date
+): Promise<boolean> {
+  const remaining = await tx.repairOrder.count({
+    where: {
+      technicianId,
+      id: { not: excludeOrderId },
+      status: { in: ['NEW', ...ACCEPTED_WORK_STATUSES] },
+    },
+  });
+  if (remaining > 0) return false;
+  const freed = await tx.employee.updateMany({
+    where: { id: technicianId, status: { in: ['BUSY', 'RESERVED'] }, isActive: true },
+    data: { status: 'AVAILABLE', availableSince: now },
+  });
+  return freed.count > 0;
+}
+
+/** Helper technicians must be distinct active technicians other than the job owner. */
+async function validateHelperIds(
+  tx: Prisma.TransactionClient,
+  ids: number[],
+  ownerTechnicianId: number | null
+): Promise<number[]> {
+  const unique = Array.from(new Set(ids));
+  if (unique.length > MAX_HELPERS) {
+    throw new AppError(400, `At most ${MAX_HELPERS} helper technicians are allowed`);
+  }
+  if (ownerTechnicianId !== null && unique.includes(ownerTechnicianId)) {
+    throw new AppError(400, 'The technician who owns the job cannot also be listed as a helper');
+  }
+  if (unique.length === 0) return [];
+  const found = await tx.employee.count({
+    where: { id: { in: unique }, role: 'TECHNICIAN', isActive: true },
+  });
+  if (found !== unique.length) {
+    throw new AppError(400, 'Helper technicians must be active employees with the TECHNICIAN role');
+  }
+  return unique;
+}
+
+/** Makes the helper list exactly `ids`; existing rows keep who added them. */
+async function replaceHelpers(
+  tx: Prisma.TransactionClient,
+  repairOrderId: number,
+  ids: number[],
+  addedById: number
+): Promise<boolean> {
+  const existing = await tx.repairOrderHelper.findMany({ where: { repairOrderId }, select: { technicianId: true } });
+  const current = new Set(existing.map((h) => h.technicianId));
+  const next = new Set(ids);
+  const toRemove = [...current].filter((id) => !next.has(id));
+  const toAdd = [...next].filter((id) => !current.has(id));
+  if (toRemove.length > 0) {
+    await tx.repairOrderHelper.deleteMany({ where: { repairOrderId, technicianId: { in: toRemove } } });
+  }
+  if (toAdd.length > 0) {
+    await tx.repairOrderHelper.createMany({
+      data: toAdd.map((technicianId) => ({ repairOrderId, technicianId, addedById })),
+    });
+  }
+  return toRemove.length > 0 || toAdd.length > 0;
+}
 
 /** Returns true when a Prisma P2002 error was raised by the given unique field. */
 function isUniqueViolationOn(err: any, field: string): boolean {
@@ -468,7 +544,7 @@ export class RepairService {
       //    Conditional: fails if the order changed status or technician concurrently.
       const guarded = await tx.repairOrder.updateMany({
         where: { id: repairOrderId, status: existingOrder.status, technicianId: existingOrder.technicianId },
-        data: { status: 'WAITING_APPROVAL', lastActivityAt: new Date() },
+        data: { status: 'WAITING_APPROVAL', ...activityFields(new Date()) },
       });
       if (guarded.count === 0) {
         throw new AppError(409, 'Repair order changed concurrently; item was not added');
@@ -543,6 +619,7 @@ export class RepairService {
         where: { id: itemId },
         data: { status: 'COMPLETED' },
       });
+      await recordActivity(tx, repairOrderId);
 
       await tx.statusLog.create({
         data: {
@@ -573,18 +650,33 @@ export class RepairService {
     return { order, item: toRepairItemView(item) };
   }
 
+  /**
+   * Records the customer's decision on one quotation item (SRS 3.4).
+   * PHONE: staff (the assigned TECHNICIAN, RECEPTIONIST or ADMIN) record the result of a phone call;
+   *        resolvedById / resolvedAt / resolutionChannel / resolutionNote are stored as evidence.
+   * LINE:  the customer pressed approve/reject in LINE (only when CUSTOMER_LINE_APPROVAL_ENABLED);
+   *        resolvedById stays null.
+   * When every item is decided: at least one approved -> REPAIRING, all rejected -> INSPECTING.
+   */
   static async resolveRepairItem(
     repairOrderId: number,
     itemId: number,
-    status: 'APPROVED' | 'REJECTED'
+    status: 'APPROVED' | 'REJECTED',
+    resolution: { channel: 'PHONE' | 'LINE'; actor?: Actor | null; note?: string | null } = { channel: 'PHONE' }
   ) {
-    const { item, order, pendingCount, targetStatus } = await prisma.$transaction(async (tx) => {
+    const actor = resolution.actor ?? null;
+
+    const { item, order, pendingCount } = await prisma.$transaction(async (tx) => {
       const existingOrder = await tx.repairOrder.findUnique({
         where: { id: repairOrderId },
       });
 
       if (!existingOrder) {
         throw new AppError(404, 'Repair order not found');
+      }
+
+      if (actor?.role === 'TECHNICIAN' && existingOrder.technicianId !== actor.id) {
+        throw new AppError(403, 'Forbidden: Only the assigned technician can record the price confirmation for this order');
       }
 
       if (existingOrder.status !== 'WAITING_APPROVAL') {
@@ -594,10 +686,18 @@ export class RepairService {
         );
       }
 
+      const now = new Date();
+
       // Atomically update only if item belongs to this order and is currently PENDING
       const updateRes = await tx.repairItem.updateMany({
         where: { id: itemId, repairOrderId, status: 'PENDING' },
-        data: { status },
+        data: {
+          status,
+          resolvedById: resolution.channel === 'PHONE' ? actor?.id ?? null : null,
+          resolvedAt: now,
+          resolutionChannel: resolution.channel,
+          resolutionNote: resolution.note ?? null,
+        },
       });
 
       if (updateRes.count === 0) {
@@ -611,13 +711,13 @@ export class RepairService {
         where: { id: itemId },
       });
 
+      // Recording a result counts as activity (SRS 3.6)
+      await recordActivity(tx, repairOrderId, now);
+
       // Check remaining pending items
       const remainingPending = await tx.repairItem.count({
         where: { repairOrderId, status: 'PENDING' },
       });
-
-      let updatedOrder = existingOrder;
-      let calculatedTargetStatus: RepairStatus | null = null;
 
       if (remainingPending === 0) {
         const approvedCount = await tx.repairItem.count({
@@ -625,32 +725,37 @@ export class RepairService {
         });
 
         // If at least one item was approved, resume repair; if all rejected, return to INSPECTING
-        calculatedTargetStatus = approvedCount > 0 ? 'REPAIRING' : 'INSPECTING';
+        const target: RepairStatus = approvedCount > 0 ? 'REPAIRING' : 'INSPECTING';
 
         const guarded = await tx.repairOrder.updateMany({
           where: { id: repairOrderId, status: 'WAITING_APPROVAL' },
-          data: { status: calculatedTargetStatus },
+          data: { status: target, ...activityFields(now) },
         });
         if (guarded.count === 0) {
           throw new AppError(409, 'Repair order changed concurrently; please retry');
         }
-        updatedOrder = await tx.repairOrder.findUniqueOrThrow({ where: { id: repairOrderId } });
+
+        const note =
+          resolution.channel === 'PHONE'
+            ? `All quotation items resolved by phone confirmation (${approvedCount} approved), recorded by ${actor?.role ?? 'staff'}. Auto-transitioned to ${target}.`
+            : `All quotation items resolved by the customer via LINE (${approvedCount} approved). Auto-transitioned to ${target}.`;
 
         await tx.statusLog.create({
           data: {
             repairOrderId,
-            status: calculatedTargetStatus,
-            changedById: null, // Customer resolution has no employee ID
-            note: `All quotation items resolved (${approvedCount} approved). Auto-transitioned to ${calculatedTargetStatus}.`,
+            status: target,
+            changedById: resolution.channel === 'PHONE' ? actor?.id ?? null : null,
+            note,
           },
         });
       }
+
+      const updatedOrder = await tx.repairOrder.findUniqueOrThrow({ where: { id: repairOrderId } });
 
       return {
         item: updatedItem,
         order: updatedOrder,
         pendingCount: remainingPending,
-        targetStatus: calculatedTargetStatus,
       };
     });
 
@@ -673,8 +778,12 @@ export class RepairService {
   }
 
   static async updateStatus(id: number, status: RepairStatus, actor: Actor, note?: string) {
+    // Completing goes through the single completion path (same rules as POST /complete)
+    if (status === 'COMPLETED') {
+      return RepairService.completeOrder(id, actor, { note });
+    }
     const userId = actor.id;
-    const { updatedOrder, freedTechnicianId } = await prisma.$transaction(async (tx) => {
+    const { updatedOrder, freedTechnicianId, requeuedForRework } = await prisma.$transaction(async (tx) => {
       const order = await tx.repairOrder.findUnique({
         where: { id },
       });
@@ -704,19 +813,6 @@ export class RepairService {
         }
       }
 
-      // D.4: Cannot complete repair order while there are approved items not yet marked COMPLETED
-      if (status === 'COMPLETED') {
-        const approvedItemCount = await tx.repairItem.count({
-          where: { repairOrderId: id, status: 'APPROVED' },
-        });
-        if (approvedItemCount > 0) {
-          throw new AppError(
-            409,
-            `Cannot complete repair order: ${approvedItemCount} approved item(s) must be marked as COMPLETED first`
-          );
-        }
-      }
-
       // D.3: COMPLETED -> REPAIRING (rework assignment)
       let currentTechId = order.technicianId;
       if (order.status === 'COMPLETED' && status === 'REPAIRING') {
@@ -741,10 +837,41 @@ export class RepairService {
           });
 
           if (!nextTech) {
-            throw new AppError(
-              409,
-              'Cannot reopen repair: No technician is currently AVAILABLE to take rework'
-            );
+            // Nobody is free: the rework goes back to the head of the job pool (same mechanism as a
+            // requeue). The next free technician gets it reserved and resumes at REPAIRING on accept.
+            const now = new Date();
+            const pooled = await tx.repairOrder.updateMany({
+              where: { id, status: 'COMPLETED', technicianId: order.technicianId },
+              data: {
+                status: 'NEW',
+                technicianId: null,
+                assignedAt: null,
+                acknowledgedAt: null,
+                ackReminderCount: 0,
+                lastAckReminderAt: null,
+                queuePriority: 1,
+                ...activityFields(now),
+              },
+            });
+            if (pooled.count === 0) {
+              throw new AppError(409, 'Repair order changed concurrently; status was not updated');
+            }
+            await tx.statusLog.create({
+              data: {
+                repairOrderId: id,
+                status: 'NEW',
+                changedById: userId,
+                note:
+                  'ตีกลับซ่อมใหม่ ยังไม่มีช่างว่าง ส่งเข้าคิวลำดับแรก / ' +
+                  'Rework requested; no technician AVAILABLE, returned to the head of the job pool' +
+                  (note ? ` (${note})` : ''),
+              },
+            });
+            const pooledOrder = await tx.repairOrder.findUniqueOrThrow({
+              where: { id },
+              include: { customer: { select: customerResponseSelect }, machine: true },
+            });
+            return { updatedOrder: pooledOrder, freedTechnicianId: null, requeuedForRework: true };
           }
 
           const nextTechUpdate = await tx.employee.updateMany({
@@ -771,7 +898,7 @@ export class RepairService {
           status,
           technicianId: currentTechId,
           ...(status === 'DELIVERED' || status === 'CANCELLED' ? { closedAt: now } : {}),
-          ...(order.status === 'COMPLETED' && status === 'REPAIRING' ? { lastActivityAt: now } : {}),
+          ...activityFields(now),
         },
       });
       if (guarded.count === 0) {
@@ -797,27 +924,13 @@ export class RepairService {
       // 3. Free the technician when the order reaches COMPLETED / DELIVERED / CANCELLED and they hold
       //    nothing else. Covers cancelling a reserved (not yet accepted) order: RESERVED -> AVAILABLE.
       //    Only BUSY/RESERVED active technicians are freed (never flips OFFLINE or deactivated staff).
-      if (['COMPLETED', 'DELIVERED', 'CANCELLED'].includes(status) && order.technicianId) {
-        const remainingHeldOrders = await tx.repairOrder.count({
-          where: {
-            technicianId: order.technicianId,
-            id: { not: order.id },
-            status: { in: ['NEW', ...ACCEPTED_WORK_STATUSES] },
-          },
-        });
-
-        if (remainingHeldOrders === 0) {
-          const freed = await tx.employee.updateMany({
-            where: { id: order.technicianId, status: { in: ['BUSY', 'RESERVED'] }, isActive: true },
-            data: { status: 'AVAILABLE', availableSince: now },
-          });
-          if (freed.count > 0) {
-            technicianFreed = order.technicianId;
-          }
+      if (['DELIVERED', 'CANCELLED'].includes(status) && order.technicianId) {
+        if (await releaseTechnicianIfIdle(tx, order.technicianId, order.id, now)) {
+          technicianFreed = order.technicianId;
         }
       }
 
-      return { updatedOrder: updated, freedTechnicianId: technicianFreed };
+      return { updatedOrder: updated, freedTechnicianId: technicianFreed, requeuedForRework: false };
     });
 
     // Broadcast SSE strictly post-commit
@@ -828,17 +941,174 @@ export class RepairService {
       updatedAt: updatedOrder.updatedAt.toISOString(),
     });
 
-    // Send push notification to customer on COMPLETED or DELIVERED
-    if (status === 'COMPLETED' || status === 'DELIVERED') {
+    // Send push notification to customer on DELIVERED (COMPLETED is sent by completeOrder)
+    if (status === 'DELIVERED') {
       LineWebhookService.notifyCustomerStatusChange(updatedOrder.id, status).catch(() => {});
     }
 
-    // If technician was freed, attempt to match next pending job
-    if (freedTechnicianId) {
+    // If technician was freed (or a rework was pooled), attempt to match next pending job
+    if (freedTechnicianId || requeuedForRework) {
       await AssignmentService.processQueue();
     }
 
     return withPublicCustomer(updatedOrder);
+  }
+
+  /**
+   * POST /api/repairs/:id/complete (and PATCH /status -> COMPLETED for ADMIN/RECEPTIONIST).
+   * REPAIRING -> COMPLETED. Every APPROVED item must already be COMPLETED (409 with the count).
+   * Optional completionSummary and helper technicians (owner request). The technician becomes
+   * AVAILABLE if they hold no other job, and the queue runs again.
+   */
+  static async completeOrder(
+    id: number,
+    actor: Actor,
+    input: { completionSummary?: string | null; helperTechnicianIds?: number[]; note?: string }
+  ) {
+    const result = await prisma.$transaction(async (tx) => {
+      const order = await tx.repairOrder.findUnique({ where: { id } });
+      if (!order) {
+        throw new AppError(404, 'Repair order not found');
+      }
+      if (actor.role === 'TECHNICIAN' && order.technicianId !== actor.id) {
+        throw new AppError(403, 'Forbidden: You are not the assigned technician for this order');
+      }
+      if (order.status === 'COMPLETED') {
+        throw new AppError(409, 'Repair order is already in status COMPLETED');
+      }
+      if (order.status !== 'REPAIRING') {
+        throw new AppError(409, `Only a REPAIRING order can be completed (current status ${order.status})`);
+      }
+
+      // D.4: approved items must all be marked COMPLETED first
+      const approvedNotCompleted = await tx.repairItem.count({
+        where: { repairOrderId: id, status: 'APPROVED' },
+      });
+      if (approvedNotCompleted > 0) {
+        throw new AppError(
+          409,
+          `Cannot complete repair order: ${approvedNotCompleted} approved item(s) must be marked as COMPLETED first`,
+          { approvedItemsNotCompleted: approvedNotCompleted }
+        );
+      }
+
+      const helperIds =
+        input.helperTechnicianIds !== undefined
+          ? await validateHelperIds(tx, input.helperTechnicianIds, order.technicianId)
+          : null;
+
+      const now = new Date();
+      const guarded = await tx.repairOrder.updateMany({
+        where: { id, status: 'REPAIRING', technicianId: order.technicianId },
+        data: {
+          status: 'COMPLETED',
+          ...(input.completionSummary !== undefined ? { completionSummary: input.completionSummary } : {}),
+          ...activityFields(now),
+        },
+      });
+      if (guarded.count === 0) {
+        throw new AppError(409, 'Repair order changed concurrently; it was not completed');
+      }
+
+      if (helperIds) {
+        await replaceHelpers(tx, id, helperIds, actor.id);
+      }
+
+      await tx.statusLog.create({
+        data: {
+          repairOrderId: id,
+          status: 'COMPLETED',
+          changedById: actor.id,
+          note:
+            input.note ||
+            `Repair completed${helperIds && helperIds.length > 0 ? ` with ${helperIds.length} helper technician(s)` : ''}`,
+        },
+      });
+
+      const freed = order.technicianId
+        ? await releaseTechnicianIfIdle(tx, order.technicianId, id, now)
+        : false;
+
+      return { trackingToken: order.trackingToken, jobNumber: order.jobNumber, freed };
+    });
+
+    // Post-commit: status-only SSE, customer notification, next job for the freed technician
+    SseService.broadcastUpdate(result.trackingToken, {
+      trackingToken: result.trackingToken,
+      jobNumber: result.jobNumber,
+      status: 'COMPLETED',
+      updatedAt: new Date().toISOString(),
+    });
+    LineWebhookService.notifyCustomerStatusChange(id, 'COMPLETED').catch(() => {});
+    if (result.freed) {
+      await AssignmentService.processQueue();
+    }
+
+    return RepairService.getRepairOrderById(id, actor);
+  }
+
+  /**
+   * POST /api/repairs/:id/still-working — "ยังซ่อมอยู่" (SRS 3.6). Restarts the progress timer and
+   * clears the unanswered-reminder counter. Only for INSPECTING / WAITING_APPROVAL / REPAIRING.
+   */
+  static async stillWorking(id: number, actor: Actor) {
+    await prisma.$transaction(async (tx) => {
+      const order = await tx.repairOrder.findUnique({ where: { id } });
+      if (!order) {
+        throw new AppError(404, 'Repair order not found');
+      }
+      if (actor.role === 'TECHNICIAN' && order.technicianId !== actor.id) {
+        throw new AppError(403, 'Forbidden: You are not the assigned technician for this order');
+      }
+      if (!ACCEPTED_WORK_STATUSES.includes(order.status)) {
+        throw new AppError(409, `"Still working" is only available while inspecting, waiting for approval or repairing (status ${order.status})`);
+      }
+      const guarded = await tx.repairOrder.updateMany({
+        where: { id, status: order.status, technicianId: order.technicianId },
+        data: activityFields(new Date()),
+      });
+      if (guarded.count === 0) {
+        throw new AppError(409, 'Repair order changed concurrently; please retry');
+      }
+      await tx.statusLog.create({
+        data: { repairOrderId: id, status: order.status, changedById: actor.id, note: 'Still working (progress confirmed)' },
+      });
+    });
+    return RepairService.getRepairOrderById(id, actor);
+  }
+
+  /**
+   * PUT /api/repairs/:id/helpers — ADMIN/RECEPTIONIST set the helper technicians of a job
+   * (informational only) until it is DELIVERED or CANCELLED.
+   */
+  static async setHelpers(id: number, actor: Actor, technicianIds: number[]) {
+    await prisma.$transaction(async (tx) => {
+      const order = await tx.repairOrder.findUnique({ where: { id } });
+      if (!order) {
+        throw new AppError(404, 'Repair order not found');
+      }
+      if (CLOSED_STATUSES.includes(order.status)) {
+        throw new AppError(409, `Cannot change helper technicians of a ${order.status} repair order`);
+      }
+      const ids = await validateHelperIds(tx, technicianIds, order.technicianId);
+      const changed = await replaceHelpers(tx, id, ids, actor.id);
+      if (changed) {
+        const names = ids.length
+          ? (await tx.employee.findMany({ where: { id: { in: ids } }, select: { name: true }, orderBy: { id: 'asc' } }))
+              .map((e) => e.name)
+              .join(', ')
+          : 'none';
+        await tx.statusLog.create({
+          data: {
+            repairOrderId: id,
+            status: order.status,
+            changedById: actor.id,
+            note: `Helper technicians updated by ${actor.role}: ${names}`,
+          },
+        });
+      }
+    });
+    return RepairService.getRepairOrderById(id, actor);
   }
 
   /**
@@ -873,12 +1143,10 @@ export class RepairService {
         data: {
           status: target,
           acknowledgedAt: now,
-          lastActivityAt: now,
           ackReminderCount: 0,
           lastAckReminderAt: null,
-          progressReminderCount: 0,
-          lastProgressReminderAt: null,
           queuePriority: 0,
+          ...activityFields(now),
         },
       });
       if (claimed.count === 0) {
@@ -974,6 +1242,7 @@ export class RepairService {
     technicianId?: number;
     search?: string;
     awaitingAck?: boolean;
+    needsProgressUpdate?: boolean;
     page?: number;
     limit?: number;
   }) {
@@ -1015,6 +1284,24 @@ export class RepairService {
       });
     }
 
+    // "Jobs that need an update" (SRS 3.6): open work idle for >= PROGRESS_REMINDER_INTERVAL_MINUTES
+    // counted in business hours only. Business-minute arithmetic is done in code, then applied as an id filter.
+    let idleMinutes: Map<number, number> | null = null;
+    if (params.needsProgressUpdate) {
+      const threshold = getAppConfig().progressReminderIntervalMinutes;
+      const now = new Date();
+      const candidates = await prisma.repairOrder.findMany({
+        where: { AND: [...conditions, { status: { in: ACCEPTED_WORK_STATUSES } }] },
+        select: { id: true, lastActivityAt: true, updatedAt: true },
+      });
+      idleMinutes = new Map();
+      for (const c of candidates) {
+        const minutes = businessMinutesBetween(c.lastActivityAt ?? c.updatedAt, now);
+        if (minutes >= threshold) idleMinutes.set(c.id, minutes);
+      }
+      conditions.push({ id: { in: [...idleMinutes.keys()] } });
+    }
+
     const where: Prisma.RepairOrderWhereInput = conditions.length > 0 ? { AND: conditions } : {};
 
     const [total, orders] = await Promise.all([
@@ -1036,6 +1323,7 @@ export class RepairService {
           assignedAt: true,
           acknowledgedAt: true,
           queuePriority: true,
+          lastActivityAt: true,
           createdAt: true,
           updatedAt: true,
           otherSymptom: true,
@@ -1069,6 +1357,7 @@ export class RepairService {
           o.status === 'NEW' && o.technicianId !== null && o.acknowledgedAt === null && o.assignedAt
             ? Math.max(0, Math.floor((now - o.assignedAt.getTime()) / 60000))
             : null,
+        ...(idleMinutes ? { idleBusinessMinutes: idleMinutes.get(o.id) ?? null } : {}),
       })),
     };
   }
@@ -1090,6 +1379,14 @@ export class RepairService {
           include: { symptom: { include: { category: true } } },
         },
         repairItems: {
+          orderBy: { id: 'asc' },
+        },
+        helpers: {
+          select: {
+            createdAt: true,
+            technician: { select: { id: true, name: true } },
+            addedBy: { select: { id: true, name: true, role: true } },
+          },
           orderBy: { id: 'asc' },
         },
         statusLogs: {

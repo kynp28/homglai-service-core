@@ -68,6 +68,9 @@ async function runSmokeTests() {
   await prisma.statusLog.deleteMany({});
   await prisma.repairItem.deleteMany({});
   await prisma.repairOrderSymptom.deleteMany({});
+  await prisma.repairOrderHelper.deleteMany({});
+  await prisma.repairOrderImage.deleteMany({});
+  await prisma.orderLineSubscription.deleteMany({});
   await prisma.repairOrder.deleteMany({});
   await prisma.machine.deleteMany({});
   await prisma.customer.deleteMany({});
@@ -1006,14 +1009,21 @@ async function runSmokeTests() {
   console.log('Positive passed: PATCH /api/repairs/:id/items/:itemId/complete omits trackingToken deeply for Technician.');
 
   // 14.4 Endpoint 4: PATCH /api/repairs/:id/status (Technician completes order)
-  const techCompleteOrderRes = await axios.patch(
-    `${API_BASE}/repairs/${privacyOrder.id}/status`,
-    { status: 'COMPLETED' },
+  // Phase 5: technicians submit finished work with POST /complete (PATCH -> COMPLETED is 403 for them)
+  try {
+    await axios.patch(`${API_BASE}/repairs/${privacyOrder.id}/status`, { status: 'COMPLETED' }, { headers: tech1Headers });
+    throw new Error('Expected 403 when a technician PATCHes status to COMPLETED');
+  } catch (err: any) {
+    if (err.response?.status !== 403) throw err;
+  }
+  const techCompleteOrderRes = await axios.post(
+    `${API_BASE}/repairs/${privacyOrder.id}/complete`,
+    { completionSummary: 'เปลี่ยนโซลินอยด์วาล์ว ทดสอบแรงดันแล้ว' },
     { headers: tech1Headers }
   );
-  assertCustomerPrivacy('PATCH /api/repairs/:id/status (Technician)', techCompleteOrderRes.data.data.customer, false);
-  assertNoTrackingToken('PATCH /api/repairs/:id/status (Technician)', techCompleteOrderRes.data.data);
-  console.log('Positive passed: PATCH /api/repairs/:id/status omits trackingToken deeply for Technician.');
+  assertCustomerPrivacy('POST /api/repairs/:id/complete (Technician)', techCompleteOrderRes.data.data.customer, false);
+  assertNoTrackingToken('POST /api/repairs/:id/complete (Technician)', techCompleteOrderRes.data.data);
+  console.log('Positive passed: POST /api/repairs/:id/complete omits trackingToken deeply for Technician.');
 
   // 14.5 Admin transitions status -> ADMIN still receives trackingToken
   const adminReworkRes = await axios.patch(

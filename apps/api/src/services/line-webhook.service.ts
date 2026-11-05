@@ -4,6 +4,13 @@ import { z } from 'zod';
 import { normalizePhone } from '../utils/phone';
 import { AppError } from '../utils/app-error';
 import { RepairService } from './repair.service';
+import { getAppConfig } from '../config/env';
+
+/** Thai reply when customers press approve/reject while LINE approval is switched off (SRS 1.3, 3.5). */
+export const LINE_APPROVAL_DISABLED_REPLY =
+  'ขณะนี้ร้านยังไม่เปิดให้อนุมัติราคาผ่าน LINE กรุณารอร้านติดต่อกลับเพื่อยืนยันราคาทางโทรศัพท์ ขอบคุณครับ';
+
+export type ResolvePostbackOutcome = 'disabled' | 'not_found' | 'forbidden' | 'resolved' | 'conflict' | 'error';
 
 const postbackDataSchema = z.object({
   action: z.literal('resolve_item'),
@@ -71,17 +78,26 @@ export class LineWebhookService {
     }
   }
 
+  /**
+   * Quotation push with approve/reject buttons. Only sent when CUSTOMER_LINE_APPROVAL_ENABLED=true
+   * (phase 1 of the shop confirms prices by phone). Returns what happened, for logging/tests.
+   */
   static async notifyCustomerNewItem(
     repairOrderId: number,
-    item: { id: number; name: string; price: any }
-  ): Promise<void> {
+    item: { id: number; name: string; price: any },
+    options: { approvalEnabled?: boolean } = {}
+  ): Promise<'disabled' | 'no_line_user' | 'sent' | 'error'> {
+    const approvalEnabled = options.approvalEnabled ?? getAppConfig().customerLineApprovalEnabled;
+    if (!approvalEnabled) {
+      return 'disabled';
+    }
     try {
       const order = await prisma.repairOrder.findUnique({
         where: { id: repairOrderId },
         include: { customer: true },
       });
 
-      if (!order?.customer?.lineUserId) return;
+      if (!order?.customer?.lineUserId) return 'no_line_user';
 
       const templateMessage = {
         type: 'template',
@@ -107,8 +123,70 @@ export class LineWebhookService {
       };
 
       await this.sendPush(order.customer.lineUserId, [templateMessage]);
+      return 'sent';
     } catch (err: any) {
       console.error('[LINE Notify New Item Error]:', err.message || err);
+      return 'error';
+    }
+  }
+
+  /**
+   * Customer pressed approve/reject in LINE (postback `resolve_item`).
+   * Flag off (default): reply that the shop will call to confirm the price — nothing is changed.
+   * Flag on: original behaviour (owner check), recorded with resolutionChannel = LINE, resolvedById = null.
+   */
+  static async handleResolveItemPostback(
+    params: { orderId: number; itemId: number; status: 'APPROVED' | 'REJECTED'; lineUserId: string; replyToken: string },
+    options: { approvalEnabled?: boolean } = {}
+  ): Promise<ResolvePostbackOutcome> {
+    const approvalEnabled = options.approvalEnabled ?? getAppConfig().customerLineApprovalEnabled;
+    const { orderId, itemId, status, lineUserId, replyToken } = params;
+
+    if (!approvalEnabled) {
+      await this.sendReply(replyToken, LINE_APPROVAL_DISABLED_REPLY);
+      return 'disabled';
+    }
+
+    const order = await prisma.repairOrder.findUnique({
+      where: { id: orderId },
+      include: { customer: true },
+    });
+
+    if (!order) {
+      await this.sendReply(replyToken, 'ไม่พบข้อมูลใบสั่งซ่อม');
+      return 'not_found';
+    }
+
+    // Check ownership
+    if (!order.customer.lineUserId || order.customer.lineUserId !== lineUserId) {
+      await this.sendReply(
+        replyToken,
+        'ท่านไม่มีสิทธิ์ดำเนินการ เนื่องจากบัญชี LINE ไม่ตรงกับเจ้าของงานซ่อม'
+      );
+      return 'forbidden';
+    }
+
+    try {
+      await RepairService.resolveRepairItem(orderId, itemId, status, { channel: 'LINE', actor: null });
+      const actionText = status === 'APPROVED' ? 'อนุมัติ' : 'ปฏิเสธ';
+      await this.sendReply(
+        replyToken,
+        `บันทึกผลการ${actionText}รายการสำหรับใบงาน ${order.jobNumber} เรียบร้อยแล้ว`
+      );
+      return 'resolved';
+    } catch (err: any) {
+      if (err instanceof AppError && err.statusCode === 409) {
+        await this.sendReply(
+          replyToken,
+          'รายการนี้ได้รับการพิจารณาไปแล้ว หรือไม่สามารถดำเนินการได้ในขณะนี้'
+        );
+        return 'conflict';
+      }
+      await this.sendReply(
+        replyToken,
+        'เกิดข้อผิดพลาดในการบันทึกข้อมูล กรุณาลองใหม่อีกครั้งหรือติดต่อทางร้าน'
+      );
+      return 'error';
     }
   }
 
@@ -234,46 +312,7 @@ export class LineWebhookService {
           }
 
           const { orderId, itemId, status } = parseResult.data;
-
-          const order = await prisma.repairOrder.findUnique({
-            where: { id: orderId },
-            include: { customer: true },
-          });
-
-          if (!order) {
-            await this.sendReply(replyToken, 'ไม่พบข้อมูลใบสั่งซ่อม');
-            continue;
-          }
-
-          // Check ownership
-          if (!order.customer.lineUserId || order.customer.lineUserId !== lineUserId) {
-            await this.sendReply(
-              replyToken,
-              'ท่านไม่มีสิทธิ์ดำเนินการ เนื่องจากบัญชี LINE ไม่ตรงกับเจ้าของงานซ่อม'
-            );
-            continue;
-          }
-
-          try {
-            await RepairService.resolveRepairItem(orderId, itemId, status);
-            const actionText = status === 'APPROVED' ? 'อนุมัติ' : 'ปฏิเสธ';
-            await this.sendReply(
-              replyToken,
-              `บันทึกผลการ${actionText}รายการสำหรับใบงาน ${order.jobNumber} เรียบร้อยแล้ว`
-            );
-          } catch (err: any) {
-            if (err instanceof AppError && err.statusCode === 409) {
-              await this.sendReply(
-                replyToken,
-                'รายการนี้ได้รับการพิจารณาไปแล้ว หรือไม่สามารถดำเนินการได้ในขณะนี้'
-              );
-            } else {
-              await this.sendReply(
-                replyToken,
-                'เกิดข้อผิดพลาดในการบันทึกข้อมูล กรุณาลองใหม่อีกครั้งหรือติดต่อทางร้าน'
-              );
-            }
-          }
+          await this.handleResolveItemPostback({ orderId, itemId, status, lineUserId, replyToken: replyToken ?? '' });
         }
       } catch (error: any) {
         console.error('[LINE Webhook Event Error]:', error.message || error);

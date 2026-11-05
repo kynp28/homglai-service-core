@@ -31,6 +31,8 @@ model Employee {
   resolvedItems  RepairItem[]       @relation("ItemResolvedBy")
   uploadedImages RepairOrderImage[]
   notifications  Notification[]
+  helpedOrders   RepairOrderHelper[] @relation("HelperTechnician")
+  helpersAdded   RepairOrderHelper[] @relation("HelperAddedBy")
 }
 
 model Customer {
@@ -140,6 +142,7 @@ model RepairOrder {
   statusLogs  StatusLog[]
   images      RepairOrderImage[]
   lineSubscriptions OrderLineSubscription[]
+  helpers     RepairOrderHelper[]
 
   @@index([status, technicianId])
   @@index([status, acknowledgedAt])
@@ -203,6 +206,23 @@ model RepairOrderImage {
   createdAt     DateTime    @default(now())
 
   @@index([repairOrderId, kind])
+}
+
+/// Technicians who helped on a job (informational only; never affects the queue).
+/// The job owner picks them when completing; ADMIN/RECEPTIONIST can edit until DELIVERED/CANCELLED.
+model RepairOrderHelper {
+  id            Int         @id @default(autoincrement())
+  repairOrderId Int
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  technicianId  Int
+  technician    Employee    @relation("HelperTechnician", fields: [technicianId], references: [id])
+  addedById     Int
+  addedBy       Employee    @relation("HelperAddedBy", fields: [addedById], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@unique([repairOrderId, technicianId])
+  @@index([technicianId])
+  @@index([addedById])
 }
 
 model OrderLineSubscription {

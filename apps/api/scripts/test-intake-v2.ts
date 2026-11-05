@@ -88,6 +88,7 @@ async function cleanupOrdersByReceipt(receipts: string[]): Promise<void> {
   await prisma.statusLog.deleteMany({ where: { repairOrderId: { in: ids } } });
   await prisma.repairItem.deleteMany({ where: { repairOrderId: { in: ids } } });
   await prisma.repairOrderSymptom.deleteMany({ where: { repairOrderId: { in: ids } } });
+  await prisma.repairOrderHelper.deleteMany({ where: { repairOrderId: { in: ids } } });
   await prisma.repairOrder.deleteMany({ where: { id: { in: ids } } });
 }
 

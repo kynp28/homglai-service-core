@@ -27,6 +27,9 @@ async function main() {
   await prisma.statusLog.deleteMany({});
   await prisma.repairItem.deleteMany({});
   await prisma.repairOrderSymptom.deleteMany({});
+  await prisma.repairOrderHelper.deleteMany({});
+  await prisma.repairOrderImage.deleteMany({});
+  await prisma.orderLineSubscription.deleteMany({});
   await prisma.repairOrder.deleteMany({});
   await prisma.machine.deleteMany({});
   await prisma.customer.deleteMany({});
@@ -128,6 +131,9 @@ async function main() {
     await prisma.statusLog.deleteMany({});
     await prisma.repairItem.deleteMany({});
     await prisma.repairOrderSymptom.deleteMany({});
+    await prisma.repairOrderHelper.deleteMany({});
+    await prisma.repairOrderImage.deleteMany({});
+    await prisma.orderLineSubscription.deleteMany({});
     await prisma.repairOrder.deleteMany({});
 
     // 2. Temporarily set all technicians to BUSY so no orders are auto-assigned during creation
