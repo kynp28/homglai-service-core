@@ -305,6 +305,12 @@ export const getRepairsQuerySchema = z.object({
     .trim()
     .max(100, 'Search query cannot exceed 100 characters')
     .optional(),
+  awaitingAck: z
+    .preprocess(
+      (val) => (val === '' || val === undefined ? undefined : val),
+      z.enum(['true', 'false'], { errorMap: () => ({ message: 'awaitingAck must be true or false' }) }).optional()
+    )
+    .transform((val) => val === 'true'),
   page: z
     .preprocess(
       (val) => (val === '' ? undefined : val),

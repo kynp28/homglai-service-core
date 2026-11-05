@@ -152,12 +152,16 @@ router.post('/', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairContr
  *         description: Matches jobNumber, paperReceiptNo, paperBookNo, customer phone or customer name (max 100 chars)
  *         schema: { type: string }
  *       - in: query
+ *         name: awaitingAck
+ *         description: "true = only jobs reserved for a technician but not yet accepted (ADMIN sees all, TECHNICIAN sees own)"
+ *         schema: { type: string, enum: ['true', 'false'] }
+ *       - in: query
  *         name: page
  *         schema: { type: integer, default: 1 }
  *       - in: query
  *         name: limit
  *         schema: { type: integer, default: 20 }
- *     description: TECHNICIAN sees only orders assigned to them (including ones awaiting acceptance); unassigned NEW orders are not listed.
+ *     description: TECHNICIAN sees only orders assigned to them (including ones awaiting acceptance); unassigned NEW orders are not listed. Each row includes assignedAt and waitingMinutes (minutes a reserved job has waited for acceptance, null otherwise).
  *     responses:
  *       200:
  *         description: List of repair orders (summary incl. paperReceiptNo, paperBookNo, receivedDate, warrantyStatus)
@@ -181,7 +185,7 @@ router.get('/', authenticate, RepairController.getRepairs);
  *     description: |
  *       Full intake data (paper form fields, warranty, accessories, careAdvice, ...), items with
  *       quantity / unitPrice / amount / itemType / barcode / resolution fields, and totalAmount
- *       (sum of item amounts excluding REJECTED, no VAT/discount). TECHNICIAN may only view orders assigned to them.
+ *       (sum of the amounts of all items, no VAT/discount). TECHNICIAN may only view orders assigned to them.
  *     responses:
  *       200:
  *         description: Repair order details
@@ -230,6 +234,62 @@ router.get('/:id', authenticate, RepairController.getRepairById);
  *         description: Order is DELIVERED/CANCELLED, or paperReceiptNo already used
  */
 router.patch('/:id', authenticate, requireRole('RECEPTIONIST', 'ADMIN'), RepairController.updateRepair);
+
+/**
+ * @openapi
+ * /api/repairs/{id}/accept:
+ *   post:
+ *     summary: Accept a reserved job (technician "รับงานนี้")
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       The assigned TECHNICIAN accepts the job reserved for them, or an ADMIN accepts on their behalf
+ *       (logged as such). NEW -> INSPECTING and technician RESERVED -> BUSY. A job that was returned to
+ *       the pool from a deactivated technician resumes at WAITING_APPROVAL (PENDING items), REPAIRING
+ *       (APPROVED/COMPLETED items) or INSPECTING.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Accepted; returns the repair order details
+ *       403:
+ *         description: RECEPTIONIST, or a technician the job is not reserved for
+ *       404:
+ *         description: Not found
+ *       409:
+ *         description: Not waiting for acceptance (already accepted, unassigned, or other status)
+ */
+router.post('/:id/accept', authenticate, requireRole('TECHNICIAN', 'ADMIN'), RepairController.accept);
+
+/**
+ * @openapi
+ * /api/repairs/{id}/release:
+ *   post:
+ *     summary: Release a reserved job back to the pool (ADMIN)
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       Only for a job reserved for a technician that has not been accepted yet. The order goes back to
+ *       the pool (technicianId cleared), the technician returns to AVAILABLE, and the queue runs again.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Released; returns the repair order details (it may already be reserved for another technician)
+ *       403:
+ *         description: Not an ADMIN
+ *       404:
+ *         description: Not found
+ *       409:
+ *         description: Not a reserved, unaccepted job
+ */
+router.post('/:id/release', authenticate, requireRole('ADMIN'), RepairController.release);
 
 /**
  * @openapi

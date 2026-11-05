@@ -432,7 +432,7 @@ async function main() {
     );
     assertEq(labor.data.data.item.amount, '0.00', 'LABOR_HOURS with unitPrice 0 accepted');
 
-    // An item that will be REJECTED must not count in totalAmount
+    // An item that will be REJECTED still counts in totalAmount (SRS 2 "ผลรวมของทุกรายการ", owner confirmed)
     const rejected = await axios.post(
       `${API_BASE}/repairs/${sample.id}/items`,
       { name: 'ปะเก็น', itemType: 'PART', quantity: 3, unitPrice: 10.1 },
@@ -446,7 +446,11 @@ async function main() {
     );
 
     const detail = (await axios.get(`${API_BASE}/repairs/${sample.id}`, { headers: tech1 })).data.data;
-    assertEq(detail.totalAmount, '815.00', 'totalAmount = 250 + 215 + 350 (+0 labor, rejected excluded)');
+    assertEq(detail.totalAmount, '845.30', 'totalAmount = 250 + 215 + 350 + 0 (labor) + 30.30 (rejected item included)');
+    const sampleOnly = detail.repairItems
+      .filter((i: any) => ['PART', 'TRAVEL_FEE', 'SERVICE_FEE'].includes(i.itemType) && i.status !== 'REJECTED')
+      .reduce((sum: number, i: any) => sum + Math.round(Number(i.amount) * 100), 0);
+    assertEq(sampleOnly, 81500, 'paper-form sample lines (250 + 215 + 350) = 815.00');
     assertEq(detail.repairItems.length, 5, 'five items on the order');
     for (const item of detail.repairItems) {
       for (const key of ['quantity', 'unitPrice', 'amount', 'itemType', 'barcode', 'status', 'price']) {
@@ -461,7 +465,7 @@ async function main() {
     }
     const activityAfter = (await prisma.repairOrder.findUniqueOrThrow({ where: { id: sample.id } })).lastActivityAt;
     assert(activityAfter && activityBefore && activityAfter > activityBefore, 'adding items updates lastActivityAt');
-    console.log('  [PASS] Sample order totalAmount = 815.00 with all v2 item fields.');
+    console.log('  [PASS] Sample lines = 815.00; totalAmount 845.30 counts every item incl. REJECTED; all v2 item fields.');
 
     await expectStatus(403, 'Other TECHNICIAN viewing assigned order', () =>
       axios.get(`${API_BASE}/repairs/${sample.id}`, { headers: tech2 })

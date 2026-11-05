@@ -30,6 +30,8 @@ async function main() {
   await prisma.repairOrder.deleteMany({});
   await prisma.machine.deleteMany({});
   await prisma.customer.deleteMany({});
+  // Phase 3+: notifications reference employees
+  await prisma.notification.deleteMany({});
 
   // Clean up any extra employees created during other tests
   await prisma.employee.deleteMany({
@@ -80,12 +82,13 @@ async function main() {
   console.log(`All ${uniqueJobNumbers.size} generated job numbers are strictly unique.`);
 
   const createdOrderIds = intakeSuccesses.map((r: any) => r.id);
+  // Phase 4 (SRS 3.3): assignment reserves the job (status stays NEW, technicianId set) until accepted
   const inspectingOrders = await prisma.repairOrder.findMany({
-    where: { id: { in: createdOrderIds }, status: 'INSPECTING' },
+    where: { id: { in: createdOrderIds }, status: 'NEW', technicianId: { not: null } },
     select: { id: true, technicianId: true },
   });
 
-  console.log(`Initial assigned orders in INSPECTING status: ${inspectingOrders.length} (Expected: 5)`);
+  console.log(`Initial reserved orders (NEW + technician): ${inspectingOrders.length} (Expected: 5)`);
   if (inspectingOrders.length !== 5) {
     throw new Error(`Expected exactly 5 orders assigned to 5 available technicians, got: ${inspectingOrders.length}`);
   }
@@ -163,7 +166,7 @@ async function main() {
 
     // 5. Query assigned orders
     const roundAssignedOrders = await prisma.repairOrder.findMany({
-      where: { id: { in: roundOrderIds }, status: 'INSPECTING' },
+      where: { id: { in: roundOrderIds }, status: 'NEW', technicianId: { not: null } },
       select: { id: true, technicianId: true },
     });
 
@@ -193,12 +196,14 @@ async function main() {
   // -------------------------------------------------------------------------
   console.log('[Test 3] Testing race condition on simultaneous item resolution...');
   const orderWithTech = await prisma.repairOrder.findFirst({
-    where: { status: 'INSPECTING', technicianId: { not: null } },
+    where: { status: 'NEW', technicianId: { not: null }, acknowledgedAt: null },
   });
 
   if (!orderWithTech) {
-    throw new Error('No active order with technician found for Test 3');
+    throw new Error('No reserved order found for Test 3');
   }
+  // Phase 4: accept the reserved job (ADMIN on behalf of the technician) before adding items
+  await axios.post(`${API_BASE}/repairs/${orderWithTech.id}/accept`, {}, { headers: authHeaders });
 
   const addItemRes = await axios.post(
     `${API_BASE}/repairs/${orderWithTech.id}/items`,

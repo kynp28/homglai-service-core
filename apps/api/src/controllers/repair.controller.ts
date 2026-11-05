@@ -80,6 +80,7 @@ export class RepairController {
       const result = await RepairService.addRepairItem(repairOrderId, {
         ...validatedData,
         technicianId,
+        actorRole: req.user!.role,
       });
 
       res.status(201).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
@@ -170,7 +171,7 @@ export class RepairController {
         }
       }
 
-      const updatedOrder = await RepairService.updateStatus(id, status, userId, note);
+      const updatedOrder = await RepairService.updateStatus(id, status, { id: userId, role: req.user!.role }, note);
       res.status(200).json({ status: 'success', data: sanitizeForRole(updatedOrder, req.user!.role) });
     } catch (error) {
       next(error);
@@ -187,11 +188,40 @@ export class RepairController {
         status: query.status,
         technicianId: query.technicianId,
         search: query.search,
+        awaitingAck: query.awaitingAck,
         page: query.page,
         limit: query.limit,
       });
 
       res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /api/repairs/:id/accept — assigned TECHNICIAN, or ADMIN on their behalf (route enforces roles). */
+  static async accept(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+      const order = await RepairService.acceptOrder(id, { id: req.user!.employeeId, role: req.user!.role });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /api/repairs/:id/release — ADMIN only (route enforces role). */
+  static async release(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) {
+        throw new AppError(400, 'Invalid repair order ID');
+      }
+      const order = await RepairService.releaseOrder(id, { id: req.user!.employeeId, role: req.user!.role });
+      res.status(200).json({ status: 'success', data: sanitizeForRole(order, req.user!.role) });
     } catch (error) {
       next(error);
     }

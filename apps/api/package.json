@@ -17,6 +17,7 @@
     "test:business-hours": "tsx scripts/test-business-hours.ts",
     "test:config": "tsx scripts/test-config.ts",
     "test:notifications": "tsx scripts/test-notifications.ts",
+    "test:queue": "tsx scripts/test-queue.ts",
     "test:all": "node scripts/test-runner.js"
   },
   "dependencies": {

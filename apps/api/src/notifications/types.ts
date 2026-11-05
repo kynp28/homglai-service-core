@@ -49,11 +49,25 @@ export interface ProgressUnansweredDigestEvent {
   }>;
 }
 
+/** Orders returned to the job pool because their technician was deactivated / left the role (to: every active ADMIN). */
+export interface OrdersRequeuedDigestEvent {
+  type: 'ORDERS_REQUEUED_DIGEST';
+  technicianName: string;
+  reason: 'DEACTIVATED' | 'ROLE_CHANGED';
+  orders: Array<{
+    repairOrderId: number;
+    jobNumber: string;
+    /** Stage the order was in before it was returned (NEW = reserved, not yet accepted) */
+    previousStatus: 'NEW' | 'INSPECTING' | 'WAITING_APPROVAL' | 'REPAIRING';
+  }>;
+}
+
 export type NotificationEvent =
   | JobReservedEvent
   | AckOverdueDigestEvent
   | ProgressCheckEvent
-  | ProgressUnansweredDigestEvent;
+  | ProgressUnansweredDigestEvent
+  | OrdersRequeuedDigestEvent;
 
 export type NotificationType = NotificationEvent['type'];
 

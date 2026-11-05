@@ -27,10 +27,10 @@ export function toRepairItemView<T extends ItemLike>(item: T) {
   };
 }
 
-/** Sum of item amounts excluding REJECTED items (no VAT / discount). */
+/**
+ * Sum of the amounts of ALL items (SRS 2: "ผลรวมของทุกรายการ"; owner confirmed REJECTED items are
+ * included). No VAT / discount; the same value is shown as Sub Total and Grand Total.
+ */
 export function computeTotalAmount(items: ItemLike[]): string {
-  return items
-    .filter((item) => item.status !== 'REJECTED')
-    .reduce((sum, item) => sum.add(itemAmount(item)), new Prisma.Decimal(0))
-    .toFixed(2);
+  return items.reduce((sum, item) => sum.add(itemAmount(item)), new Prisma.Decimal(0)).toFixed(2);
 }

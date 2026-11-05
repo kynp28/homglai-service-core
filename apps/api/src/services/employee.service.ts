@@ -1,7 +1,7 @@
-import prisma, { EmployeeRole } from '@homglai/db';
+import prisma, { EmployeeRole, Prisma } from '@homglai/db';
 import bcrypt from 'bcryptjs';
 import { AppError } from '../utils/app-error';
-import { AssignmentService } from './assignment.service';
+import { AssignmentService, heldOrdersWhere, RequeuedOrder } from './assignment.service';
 import { customerResponseSelect, withPublicCustomer } from '../utils/customer-view';
 
 export class EmployeeService {
@@ -26,6 +26,7 @@ export class EmployeeService {
         name: data.name,
         role: data.role,
         status: 'AVAILABLE',
+        availableSince: new Date(),
         isActive: true,
         passwordHash,
       },
@@ -60,9 +61,16 @@ export class EmployeeService {
     });
   }
 
+  /**
+   * PATCH /api/employees/:id (ADMIN). Deactivating a technician, or moving them out of the TECHNICIAN
+   * role, returns every job they hold to the pool in the SAME transaction
+   * (AssignmentService.requeueOrdersOfTechnician); after commit the ADMINs get one summary and the
+   * queue runs again. Customers get no LINE push for this internal event.
+   */
   static async updateEmployee(
     id: number,
-    data: { name?: string; role?: EmployeeRole; isActive?: boolean }
+    data: { name?: string; role?: EmployeeRole; isActive?: boolean },
+    actorId: number
   ) {
     const employee = await prisma.employee.findUnique({
       where: { id },
@@ -71,31 +79,55 @@ export class EmployeeService {
       throw new AppError(404, 'Employee not found');
     }
 
-    const updateData: any = {};
+    const deactivating = data.isActive === false;
+    const leavingTechnicianRole = data.role !== undefined && data.role !== 'TECHNICIAN';
+    const releasesJobs = employee.role === 'TECHNICIAN' && (deactivating || leavingTechnicianRole);
+    const reason = deactivating ? 'DEACTIVATED' : 'ROLE_CHANGED';
+
+    const updateData: Prisma.EmployeeUpdateInput = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.role !== undefined) updateData.role = data.role;
     if (data.isActive !== undefined) {
       updateData.isActive = data.isActive;
-      // If soft-deleted / deactivated, set status to OFFLINE
-      if (data.isActive === false) {
-        updateData.status = 'OFFLINE';
-      }
+    }
+    if (deactivating || (employee.role === 'TECHNICIAN' && leavingTechnicianRole)) {
+      // Deactivated / no longer a technician: out of the queue until they set themselves AVAILABLE again
+      updateData.status = 'OFFLINE';
+    } else if (
+      data.role === 'TECHNICIAN' &&
+      employee.role !== 'TECHNICIAN' &&
+      employee.status === 'AVAILABLE'
+    ) {
+      // Joins the technician queue now (not ahead of technicians who were already waiting)
+      updateData.availableSince = new Date();
     }
 
-    const updated = await prisma.employee.update({
-      where: { id },
-      data: updateData,
-      select: {
-        id: true,
-        username: true,
-        name: true,
-        role: true,
-        status: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+    const { updated, requeued } = await prisma.$transaction(async (tx) => {
+      const updatedEmployee = await tx.employee.update({
+        where: { id },
+        data: updateData,
+        select: {
+          id: true,
+          username: true,
+          name: true,
+          role: true,
+          status: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      const returned: RequeuedOrder[] = releasesJobs
+        ? await AssignmentService.requeueOrdersOfTechnician(tx, id, actorId, reason)
+        : [];
+
+      return { updated: updatedEmployee, requeued: returned };
     });
+
+    if (releasesJobs) {
+      await AssignmentService.afterRequeue(requeued, employee.name, reason);
+    }
 
     return updated;
   }
@@ -140,6 +172,8 @@ export class EmployeeService {
   }
 
   static async updateStatusAndAssignWork(employeeId: number, status: 'AVAILABLE' | 'BUSY' | 'OFFLINE') {
+    const reservedMessage =
+      'Cannot change status while a job is reserved for you. Accept the job first, or ask an ADMIN to release it.';
     // 1. Verify employee exists and is active
     const employee = await prisma.employee.findUnique({
       where: { id: employeeId },
@@ -149,6 +183,11 @@ export class EmployeeService {
     }
     if (!employee.isActive) {
       throw new AppError(403, 'Deactivated employees cannot change status');
+    }
+
+    // SRS 3.3 (5): a RESERVED technician cannot change their own status
+    if (employee.status === 'RESERVED') {
+      throw new AppError(409, reservedMessage);
     }
 
     // 2. Prevent transitioning to OFFLINE or AVAILABLE if holding active orders
@@ -168,10 +207,21 @@ export class EmployeeService {
       }
     }
 
-    // 3. Update status
-    const updatedEmployee = await prisma.employee.update({
+    // 3. Update status (conditional: a job may have been reserved for them in the meantime).
+    //    availableSince is set only when the employee becomes AVAILABLE, so repeating AVAILABLE
+    //    does not move a waiting technician to the back of the queue.
+    const changed = await prisma.employee.updateMany({
+      where: { id: employeeId, status: { not: 'RESERVED' } },
+      data: {
+        status,
+        ...(status === 'AVAILABLE' && employee.status !== 'AVAILABLE' ? { availableSince: new Date() } : {}),
+      },
+    });
+    if (changed.count === 0) {
+      throw new AppError(409, reservedMessage);
+    }
+    const updatedEmployee = await prisma.employee.findUniqueOrThrow({
       where: { id: employeeId },
-      data: { status },
       select: {
         id: true,
         name: true,
@@ -189,14 +239,11 @@ export class EmployeeService {
       await AssignmentService.processQueue();
     }
 
-    // 5. Check if an order was assigned
+    // 5. The job this technician currently holds (a reserved job awaiting acceptance included)
     const assignedOrder = await prisma.repairOrder.findFirst({
-      where: {
-        technicianId: employeeId,
-        status: 'INSPECTING',
-      },
+      where: heldOrdersWhere(employeeId),
       include: { customer: { select: customerResponseSelect }, machine: true },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ assignedAt: 'desc' }, { id: 'desc' }],
     });
 
     const currentEmployee = await prisma.employee.findUnique({

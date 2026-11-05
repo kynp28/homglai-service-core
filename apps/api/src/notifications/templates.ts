@@ -17,6 +17,14 @@ export function progressCheckLine(jobNumber: string, machine: MachineLabel): str
   return `ใบงาน ${jobNumber} (เครื่อง ${machineText(machine)}) ยังดำเนินการซ่อมอยู่ไหม? กรุณาอัปเดตสถานะ หรือกด 'ยังซ่อมอยู่'`;
 }
 
+/** Thai stage labels used in staff messages. */
+const STAGE_LABELS: Record<'NEW' | 'INSPECTING' | 'WAITING_APPROVAL' | 'REPAIRING', string> = {
+  NEW: 'รอช่างกดรับงาน',
+  INSPECTING: 'กำลังตรวจเช็ค',
+  WAITING_APPROVAL: 'รอยืนยันราคา',
+  REPAIRING: 'กำลังซ่อม',
+};
+
 export function renderNotification(event: NotificationEvent): RenderedNotification {
   switch (event.type) {
     case 'JOB_RESERVED':
@@ -45,6 +53,16 @@ export function renderNotification(event: NotificationEvent): RenderedNotificati
         body: event.orders
           .map((o) => `- ใบงาน ${o.jobNumber}: ${o.technicianName} ไม่ตอบติดต่อกัน ${o.unansweredCount} รอบ`)
           .join('\n'),
+      };
+    case 'ORDERS_REQUEUED_DIGEST':
+      return {
+        title: `ส่งงานของช่าง ${event.technicianName} กลับกองกลาง ${event.orders.length} ใบงาน`,
+        body: [
+          event.reason === 'DEACTIVATED'
+            ? `ช่าง ${event.technicianName} ถูกปิดการใช้งาน ระบบส่งใบงานที่ถืออยู่กลับกองกลางและจัดคิวใหม่แล้ว`
+            : `ช่าง ${event.technicianName} ถูกเปลี่ยนบทบาท ระบบส่งใบงานที่ถืออยู่กลับกองกลางและจัดคิวใหม่แล้ว`,
+          ...event.orders.map((o) => `- ใบงาน ${o.jobNumber}: ขั้นเดิม ${STAGE_LABELS[o.previousStatus]}`),
+        ].join('\n'),
       };
     default: {
       const unreachable: never = event;

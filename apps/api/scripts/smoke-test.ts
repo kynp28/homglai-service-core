@@ -71,11 +71,14 @@ async function runSmokeTests() {
   await prisma.repairOrder.deleteMany({});
   await prisma.machine.deleteMany({});
   await prisma.customer.deleteMany({});
+  // Phase 3+: notifications reference employees; clear them before removing temporary employees
+  await prisma.notification.deleteMany({});
   await prisma.employee.deleteMany({
     where: { id: { notIn: [1, 2, 3, 4, 5, 6, 7] } },
   });
+  // Phase 4: queue order is availableSince ASC, id ASC — reset so tech1 (id 3) is first, as before
   await prisma.employee.updateMany({
-    data: { status: 'AVAILABLE', isActive: true },
+    data: { status: 'AVAILABLE', isActive: true, availableSince: null },
   });
 
   // -------------------------------------------------------------------
@@ -320,7 +323,7 @@ async function runSmokeTests() {
   await axios.patch(`${API_BASE}/employees/4`, { role: 'TECHNICIAN' }, { headers: adminHeaders });
   await prisma.employee.updateMany({
     where: { id: { in: [3, 4, 5, 6, 7] } },
-    data: { status: 'AVAILABLE' },
+    data: { status: 'AVAILABLE', availableSince: null },
   });
 
   // -------------------------------------------------------------------
@@ -361,7 +364,19 @@ async function runSmokeTests() {
   const order = intakeRes.data.data;
   assertCustomerPrivacy('POST /api/repairs (Intake)', order.customer, false);
   console.log(`Repair Order created: ${order.jobNumber} (ID: ${order.id})`);
-  console.log(`Assigned technician: ${order.technician ? order.technician.name : 'None'} (Status: ${order.status})`);
+  console.log(`Reserved for technician: ${order.technician ? order.technician.name : 'None'} (Status: ${order.status})`);
+
+  // Phase 4 (SRS 3.3): assignment reserves the job (status stays NEW); the technician must accept it
+  if (order.status !== 'NEW' || order.technicianId !== 3) {
+    throw new Error(`Expected order reserved for Tech 1 with status NEW, got technicianId=${order.technicianId} status=${order.status}`);
+  }
+  const acceptRes = await axios.post(`${API_BASE}/repairs/${order.id}/accept`, {}, { headers: tech1Headers });
+  if (acceptRes.data.data.status !== 'INSPECTING') {
+    throw new Error(`Expected INSPECTING after accept, got ${acceptRes.data.data.status}`);
+  }
+  assertNoTrackingToken('POST /api/repairs/:id/accept (Technician)', acceptRes.data.data);
+  order.status = acceptRes.data.data.status;
+  console.log(`Technician accepted the job (Status: ${order.status}).`);
 
   // Machine Deduplication check
   const secondIntakeRes = await axios.post(
@@ -960,6 +975,9 @@ async function runSmokeTests() {
   assertCustomerPrivacy('PATCH /api/employees/:id/status (assignedOrder)', tech1StatusData.assignedOrder.customer, false);
   assertNoTrackingToken('PATCH /api/employees/:id/status (Technician)', tech1StatusData);
   console.log('Positive passed: PATCH /api/employees/:id/status omits trackingToken deeply and protects customer privacy.');
+
+  // Phase 4: the reserved job must be accepted before items can be added
+  await axios.post(`${API_BASE}/repairs/${privacyOrder.id}/accept`, {}, { headers: tech1Headers });
 
   // 14.2 Endpoint 2: POST /api/repairs/:id/items (Technician adds item)
   const techAddItemRes = await axios.post(
