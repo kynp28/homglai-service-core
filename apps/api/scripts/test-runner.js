@@ -2,6 +2,10 @@ const { spawn, execSync } = require('child_process');
 const path = require('path');
 const axios = require('axios');
 
+// Load MYSQL_ROOT_PASSWORD (and friends) from the repo-root .env used by docker-compose.
+// Variables already set in the shell always win (dotenv never overrides them).
+require('dotenv').config({ path: path.resolve(__dirname, '../../../.env') });
+
 const pnpmCmd = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
 const testDbContainer = process.env.TEST_DB_CONTAINER || 'homglai-mysql-test';
@@ -10,7 +14,7 @@ const testDbPassword = process.env.TEST_DB_PASSWORD || process.env.MYSQL_ROOT_PA
 const testDbHost = process.env.TEST_DB_HOST || '127.0.0.1';
 const testDbPort = process.env.TEST_DB_PORT || '3307';
 
-const defaultTestDbUrl = `mysql://${testDbUser}:${testDbPassword}@${testDbHost}:${testDbPort}/homglai_db_test`;
+const defaultTestDbUrl = `mysql://${encodeURIComponent(testDbUser)}:${encodeURIComponent(testDbPassword)}@${testDbHost}:${testDbPort}/homglai_db_test`;
 const testDatabaseUrl = process.env.DATABASE_URL || defaultTestDbUrl;
 
 function assertSafeDatabaseUrl(url) {

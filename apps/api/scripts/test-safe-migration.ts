@@ -1,6 +1,10 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import dotenv from 'dotenv';
+
+// Load MYSQL_ROOT_PASSWORD from the repo-root .env (shell variables still take precedence).
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const testDbContainer = process.env.TEST_DB_CONTAINER || 'homglai-mysql-test';
 const testDbUser = process.env.TEST_DB_USER || 'root';

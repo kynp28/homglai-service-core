@@ -2,6 +2,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import prisma from '@homglai/db';
 import { assertSafeDatabaseUrl } from '../src/utils/test-safety';
+import { getBangkokDateOnly } from '../src/utils/date';
 
 const API_BASE = 'http://localhost:4000/api';
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || 'test-line-secret';
@@ -865,7 +866,7 @@ async function runSmokeTests() {
       jobNumber: `REP-TEST-T2-${Date.now()}`,
       trackingToken: crypto.randomBytes(24).toString('base64url'),
       status: 'REPAIRING',
-      receivedDate: new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z'),
+      receivedDate: getBangkokDateOnly(),
       customerId: order.customerId,
       machineId: order.machineId,
       technicianId: 4, // Tech 2

@@ -2,6 +2,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import prisma from '@homglai/db';
 import { assertSafeDatabaseUrl } from '../src/utils/test-safety';
+import { getBangkokDateOnly } from '../src/utils/date';
 
 const API_BASE = 'http://localhost:4000/api';
 
@@ -140,7 +141,7 @@ async function main() {
           jobNumber: `REP-RND${round}-${m + 1}`,
           trackingToken: crypto.randomBytes(24).toString('base64url'),
           status: 'NEW',
-          receivedDate: new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z'),
+          receivedDate: getBangkokDateOnly(),
           customerId: contentionCustomer.id,
           machineId: contentionMachine.id,
           technicianId: null,
