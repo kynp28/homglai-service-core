@@ -144,6 +144,7 @@ pnpm --filter @homglai/api create-admin
 | `TRUST_PROXY` | ไม่บังคับ | ตั้งค่าการเชื่อถือ Reverse Proxy ของ Express (`true`, `false`, หรือจำนวน hop เช่น `1`, Default: `false`) | `false` |
 | `LINE_CHANNEL_SECRET` | **จำเป็นสำหรับ Webhook** | Channel Secret จาก LINE Developers Console ใช้คำนวณ HMAC-SHA256 ตรวจสอบ Signature | `your-line-channel-secret` |
 | `LINE_CHANNEL_ACCESS_TOKEN` | **จำเป็นสำหรับส่งข้อความ** | Channel Access Token สำหรับเรียก LINE Messaging API (Reply/Push) | `your-line-channel-access-token` |
+| `LINE_LOGIN_CHANNEL_ID` | สำหรับ LIFF | Channel ID ของ LINE Login ที่ LIFF ใช้ server ใช้ตรวจว่า access token ออกให้ช่องนี้ (`LINE_IDENTITY_VERIFIER=mock` ใช้ได้เฉพาะ `NODE_ENV=test`) | `1234567890` |
 | `PUBLIC_TRACKING_BASE_URL` | ไม่บังคับ | Base URL สำหรับลิงก์ติดตามงานซ่อมที่ส่งให้ลูกค้าใน LINE (ถ้าไม่ตั้ง จะไม่ส่งลิงก์ติดตาม แต่ส่งข้อความอื่นตามปกติ) | `https://example.com/tracking/` |
 | `MYSQL_ROOT_PASSWORD` | **จำเป็นใน Docker** | รหัสผ่านผู้ใช้ root ของ MySQL (docker-compose บังคับต้องมี) | `your-secure-mysql-root-password` |
 | `ALLOW_DESTRUCTIVE_TESTS` | ไม่บังคับ | แฟล็กอนุญาตให้สคริปต์ทดสอบลบข้อมูลใน DB (Default: `false`, **ห้ามเปิดบน Production เด็ดขาด**) | `false` |
@@ -153,6 +154,17 @@ pnpm --filter @homglai/api create-admin
 | `TEST_DB_PASSWORD` | ไม่บังคับ | รหัสผ่านสำหรับฐานข้อมูลทดสอบ (Default: อ่านจาก `MYSQL_ROOT_PASSWORD` หรือ `root`) | `your-secure-mysql-root-password` |
 | `TEST_DB_HOST` | ไม่บังคับ | โฮสต์ของฐานข้อมูลทดสอบ (Default: `127.0.0.1`) | `127.0.0.1` |
 | `TEST_DB_PORT` | ไม่บังคับ | พอร์ตของฐานข้อมูลทดสอบ (Default: `3307`) | `3307` |
+| `ACK_TIMEOUT_MINUTES` | ไม่บังคับ | นาทีที่ช่างไม่กดรับงานแล้วเริ่มเตือน ADMIN (Default: `60`) | `60` |
+| `ACK_REMINDER_INTERVAL_MINUTES` | ไม่บังคับ | เตือน ADMIN ซ้ำทุกกี่นาทีเมื่อช่างยังไม่กดรับงาน (Default: `60`) | `60` |
+| `PROGRESS_REMINDER_INTERVAL_MINUTES` | ไม่บังคับ | นาทีเวลาทำการที่ใบงานนิ่งแล้วถามช่างเรื่องความคืบหน้า (Default: `60`) | `60` |
+| `PROGRESS_UNANSWERED_ADMIN_THRESHOLD` | ไม่บังคับ | ช่างไม่ตอบครบกี่รอบจึงแจ้ง ADMIN (Default: `3`) | `3` |
+| `BUSINESS_HOURS_START` / `BUSINESS_HOURS_END` | ไม่บังคับ | เวลาทำการ (เวลาไทย, `HH:MM`, ทุกวัน) (Default: `08:00` / `17:30`) | `08:00` |
+| `IMAGE_RETENTION_DAYS` | ไม่บังคับ | ลบรูปหลังใบงานปิดกี่วัน (Default: `30`) | `30` |
+| `JOB_WORKER_INTERVAL_SECONDS` / `JOBS_ENABLED` | ไม่บังคับ | รอบการทำงานเบื้องหลัง (วินาที) และเปิด/ปิด (Default: `60` / `true`) | `60` |
+| `CUSTOMER_LINE_APPROVAL_ENABLED` | ไม่บังคับ | เปิดให้ลูกค้าอนุมัติราคาผ่าน LINE (Default: `false`) | `false` |
+| `PUBLIC_SEARCH_RATE_LIMIT_MAX` | ไม่บังคับ | จำนวนครั้งค้นหาสาธารณะต่อ IP ต่อ 15 นาที (Default: `30`) | `30` |
+| `IMAGE_STORAGE_DIR` / `IMAGE_MAX_BYTES` / `IMAGE_MAX_PER_KIND` / `IMAGE_MAX_LONG_EDGE` | ไม่บังคับ | ที่เก็บรูปและข้อจำกัดรูป (Default: `./data/uploads` / `5242880` / `10` / `1600`) | `./data/uploads` |
+| `NOTIFIER_DRIVER` | ไม่บังคับ | ช่องทางแจ้งเตือนพนักงาน ตอนนี้รองรับ `db` (แสดงในเว็บ) (Default: `db`) | `db` |
 
 ---
 
@@ -163,23 +175,40 @@ pnpm --filter @homglai/api create-admin
 | Method | Path | Role ที่เรียกได้ | คำอธิบาย |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | Public | ตรวจสอบสถานะการทำงานของ Server และการเชื่อมต่อฐานข้อมูล |
-| `POST` | `/api/auth/login` | Public (Rate Limited) | เข้าสู่ระบบพนักงาน ตรวจสอบ Username/Password และคืนค่า JWT Token (จำกัด 5 ครั้งต่อ 15 นาทีต่อ IP) |
+| `POST` | `/api/auth/login` | Public (Rate Limited) | เข้าสู่ระบบพนักงาน ตรวจสอบ Username/Password และคืนค่า JWT Token (จำกัด 10 ครั้งต่อ 15 นาทีต่อ IP) |
 | `POST` | `/api/auth/change-password` | ทุก Role (Authenticated) | เปลี่ยนรหัสผ่านของตนเอง (ต้องระบุ `oldPassword` และ `newPassword` อย่างน้อย 12 ตัวอักษร) |
 | `POST` | `/api/employees` | `ADMIN` | สร้างบัญชีพนักงานใหม่ (ระบุ username, name, password, role) |
 | `GET` | `/api/employees` | `ADMIN` | ดึงรายชื่อพนักงานทั้งหมดในระบบ |
-| `PATCH` | `/api/employees/:id` | `ADMIN` | แก้ไขข้อมูลพนักงาน เปลี่ยน Role หรือระงับการใช้งานชั่วคราว (`isActive: false`) |
+| `PATCH` | `/api/employees/:id` | `ADMIN` | แก้ไขข้อมูลพนักงาน เปลี่ยน Role หรือระงับการใช้งานชั่วคราว (`isActive: false`), ตั้งวันหยุดประจำสัปดาห์ `weeklyDayOff` (0=อาทิตย์…6=เสาร์, `null`=ไม่มี วันนั้นไม่นับเวลาเตือนของงานช่างคนนั้น) — ถ้าเป็นช่าง ใบงานที่ถืออยู่ทุกขั้น (ยกเว้น `COMPLETED`) กลับกองกลางหัวคิวและจ่ายต่อทันที |
 | `POST` | `/api/employees/:id/reset-password` | `ADMIN` | รีเซ็ตรหัสผ่านพนักงานเป็นค่าใหม่ |
-| `PATCH` | `/api/employees/:id/status` | `ADMIN`, เจ้าของบัญชี | อัปเดตสถานะการทำงานพนักงาน (`AVAILABLE`, `BUSY`, `OFFLINE`) พร้อมทริกเกอร์ระบบจัดคิวงานอัตโนมัติ (ช่างจะไม่ได้รับ `trackingToken` ใน `assignedOrder`) |
+| `PATCH` | `/api/employees/:id/status` | `ADMIN`, เจ้าของบัญชี | อัปเดตสถานะการทำงานพนักงาน (`AVAILABLE`, `BUSY`, `OFFLINE`) พร้อมทริกเกอร์ระบบจัดคิวงานอัตโนมัติ (`assignedOrder` รวมงานที่จองไว้รอกดรับ, ช่างที่ `RESERVED` เปลี่ยนสถานะเองไม่ได้ ตอบ 409, ช่างจะไม่ได้รับ `trackingToken`) |
 | `POST` | `/api/repairs` | `RECEPTIONIST`, `ADMIN` | สร้างใบสั่งซ่อมใหม่ (สถานะเริ่มต้น `NEW`), บันทึกข้อมูลลูกค้า, เครื่อง และอาการเสีย พร้อมจัดคิวช่างอัตโนมัติหากมีช่างว่าง |
-| `GET` | `/api/repairs` | ทุก Role (Authenticated) | ค้นหาและแบ่งหน้าใบสั่งซ่อม (รองรับ Query: `status`, `technicianId`, `search` สูงสุด 100 ตัวอักษร, `page`, `limit`; ช่างเห็นเฉพาะงานตนเองและงาน `NEW`) |
-| `GET` | `/api/repairs/:id` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | ดูรายละเอียดใบสั่งซ่อมแบบเจาะลึก (ช่างไม่ได้รับ `trackingToken`, ทุก Role ไม่ได้รับ `customer.lineUserId` แต่ได้ `customer.lineLinked`) |
+| `GET` | `/api/repairs` | ทุก Role (Authenticated) | ค้นหาและแบ่งหน้าใบสั่งซ่อม (รองรับ Query: `status`, `technicianId`, `search` สูงสุด 100 ตัวอักษร, `page`, `limit`; ค้นด้วยเลขใบงาน/เลขใบกระดาษ/เลขเล่ม/เบอร์/ชื่อลูกค้า; ช่างเห็นเฉพาะงานที่จ่ายให้ตนเอง ไม่เห็นงาน `NEW` ที่ยังไม่มีเจ้าของ; `awaitingAck=true` = งานที่จ่ายแล้วรอกดรับ พร้อม `assignedAt`, `waitingMinutes`; `needsProgressUpdate=true` = งานที่ต้องอัปเดต (นิ่งเกินกำหนดในเวลาทำการ) พร้อม `idleBusinessMinutes`) |
+| `GET` | `/api/repairs/:id` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | ดูรายละเอียดใบสั่งซ่อมแบบเจาะลึก (ช่างไม่ได้รับ `trackingToken`, ทุก Role ไม่ได้รับ `customer.lineUserId` แต่ได้ `customer.lineLinked`) พร้อม `payment` และ `allowedActions` = ปุ่มที่ผู้เรียกกดได้กับใบงานนี้ หน้าเว็บแสดงปุ่มตามรายการนี้เท่านั้น |
+| `PATCH` | `/api/repairs/:id` | `RECEPTIONIST`, `ADMIN` | แก้ข้อมูลรับเครื่อง (ใบกระดาษ/ลูกค้า/เครื่อง/อาการ/ประกัน/อุปกรณ์ ฯลฯ) ห้ามแก้สถานะ/ช่าง/เลขใบงาน และห้ามแก้ใบงานที่ปิดแล้ว |
+| `POST` | `/api/repairs/:id/accept` | ช่างที่ได้รับจ่าย, `ADMIN` (กดแทน) | กดรับงานที่จองไว้ (`NEW` → `INSPECTING`, ช่าง `RESERVED` → `BUSY`; งานที่ถูกส่งกลับจากช่างที่ลาออกจะกลับไปขั้นที่ค้าง) |
+| `POST` | `/api/repairs/:id/release` | `ADMIN` | ปล่อยงานที่จองไว้แต่ยังไม่กดรับคืนกองกลาง (ช่างกลับ `AVAILABLE`) แล้วรันคิวใหม่ |
+| `POST` | `/api/repairs/:id/complete` | ช่างที่ได้รับจ่าย, `ADMIN` | ส่งงานซ่อม (`REPAIRING` → `COMPLETED`) พร้อม `completionSummary` และเลือก `helperTechnicianIds` (ช่างผู้ช่วย ไม่บังคับ) ช่างกลับว่างและรับงานถัดไป; `outcome: NOT_REPAIRED` = ลูกค้าไม่ซ่อม ปิดได้จาก `INSPECTING`/`REPAIRING` แล้วส่งมอบคืนตามปกติ |
+| `POST` | `/api/repairs/:id/still-working` | ช่างที่ได้รับจ่าย, `ADMIN` | ปุ่ม "ยังซ่อมอยู่" รีเซ็ตตัวจับเวลาเตือนความคืบหน้า |
+| `PUT` | `/api/repairs/:id/helpers` | `RECEPTIONIST`, `ADMIN` | แก้รายชื่อช่างผู้ช่วยของใบงาน (บันทึกไว้ดูอย่างเดียว) จนกว่าจะส่งมอบ/ยกเลิก |
+| `POST` | `/api/repairs/:id/images` | ตามประเภทรูป | อัปโหลดรูป (multipart: `files` หลายไฟล์ + `kind`) `INTAKE`/`RECEIPT_PAPER` = หน้าร้าน/แอดมิน, `DELIVERY`/`OTHER` = ช่างเจ้าของงาน/หน้าร้าน/แอดมิน รับเฉพาะ JPEG/PNG/WebP (ตรวจจากเนื้อไฟล์, HEIC → 415) ตัด EXIF/GPS ย่อด้านยาว ≤ `IMAGE_MAX_LONG_EDGE` เก็บเป็น JPEG ≤ `IMAGE_MAX_PER_KIND` รูปต่อประเภท ไฟล์เกิน `IMAGE_MAX_BYTES` → 413 |
+| `GET` | `/api/repairs/:id/images` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | รายการรูป (`id`, `kind`, `uploadedBy`, `createdAt`) ไม่มี path ของไฟล์ |
+| `GET` | `/api/repairs/:id/images/:imageId` | `ADMIN`, `RECEPTIONIST`, ช่างที่รับผิดชอบ | ดาวน์โหลดรูป (`image/jpeg`, `Cache-Control: private, no-store`) รูปต้องเป็นของใบงานนั้น ไม่มีลิงก์สาธารณะ |
+| `PUT` | `/api/repairs/:id/payment` | `RECEPTIONIST`, `ADMIN` | บันทึก/แก้ไขการรับเงิน (`amount`, `method` CASH/TRANSFER/OTHER, `note`) ของงาน `COMPLETED`/`DELIVERED` บันทึกอย่างเดียว ไม่บังคับ; ส่งพร้อม `PATCH /status` → `DELIVERED` ได้ด้วยฟิลด์ `payment` ระบบเตือน (ไม่บล็อก) ถ้ายังไม่บันทึกหรือยอดไม่ตรงกับยอดที่ต้องชำระ (รายการ APPROVED+COMPLETED) |
+| `GET` | `/api/holidays` | ทุก Role | รายการวันหยุดพิเศษของร้าน (`from`, `to`) วันเหล่านี้ไม่นับเวลาเตือน |
+| `POST` | `/api/holidays` | `ADMIN` | เพิ่มวันหยุดพิเศษ 1 วัน หรือช่วงติดกัน (`date`, `toDate` ≤31 วัน, `name`) วันที่ซ้ำตอบ 409 |
+| `DELETE` | `/api/holidays/:id` | `ADMIN` | ลบวันหยุดพิเศษ |
 | `POST` | `/api/repairs/:id/items` | `ADMIN`, ช่างที่รับผิดชอบ | เพิ่มรายการเสนอราคาอะไหล่/บริการ (เปลี่ยนสถานะใบซ่อมเป็น `WAITING_APPROVAL` อัตโนมัติ, ช่างไม่ได้รับ `trackingToken`) |
-| `PATCH` | `/api/repairs/:id/items/:itemId/status` | `RECEPTIONIST`, `ADMIN` | อนุมัติ (`APPROVED`) หรือปฏิเสธ (`REJECTED`) รายการซ่อมในฐานะตัวแทนลูกค้า |
+| `PATCH` | `/api/repairs/:id/items/:itemId/status` | `RECEPTIONIST`, `ADMIN`, ช่างที่ได้รับจ่าย | บันทึกผลยืนยันราคาทางโทรศัพท์รายรายการ (`APPROVED`/`REJECTED` + `note` ≤500) ระบบเก็บผู้กด เวลา ช่องทาง `PHONE` |
 | `PATCH` | `/api/repairs/:id/items/:itemId/complete` | `ADMIN`, ช่างที่รับผิดชอบ | ทำเครื่องหมายรายการซ่อมที่อนุมัติแล้วว่าดำเนินการซ่อมเสร็จสิ้น (`COMPLETED`, ช่างไม่ได้รับ `trackingToken`) |
-| `PATCH` | `/api/repairs/:id/status` | ทุก Role (ตามเงื่อนไข State Machine) | เปลี่ยนสถานะใบสั่งซ่อม (ช่างเปลี่ยนได้เฉพาะงานตนเอง, ช่างไม่ได้รับ `trackingToken`, `ADMIN`/`RECEPTIONIST` ได้รับตามปกติ) |
+| `GET` | `/api/notifications` | ทุก Role (Authenticated) | แจ้งเตือนของตนเองในเว็บ (Query: `unreadOnly`, `page`, `limit`) |
+| `PATCH` | `/api/notifications/:id/read` | เจ้าของแจ้งเตือน | ทำเครื่องหมายว่าอ่านแล้ว (ของคนอื่นตอบ 404) |
+| `PATCH` | `/api/repairs/:id/status` | ทุก Role (ตามเงื่อนไข State Machine) | เปลี่ยนสถานะใบสั่งซ่อม (ช่างเปลี่ยนได้เฉพาะงานตนเอง และส่งมอบ/ยกเลิกไม่ได้ — เป็นหน้าที่หน้าร้าน/แอดมิน, ช่างไม่ได้รับ `trackingToken`, `ADMIN`/`RECEPTIONIST` ได้รับตามปกติ; ตีกลับ `COMPLETED`→`REPAIRING` (กดโดย `RECEPTIONIST`/`ADMIN` เท่านั้น ช่างกดไม่ได้): งานกลับเป็น `NEW` จองให้ช่างเดิมถ้าว่าง ไม่ว่างเข้าคิวลำดับแรก ช่างได้แจ้งเตือน "งานตีกลับซ่อมใหม่" และต้องกดรับ แล้วงานกลับไป `REPAIRING`) |
 | `GET` | `/api/symptoms` | ทุก Role (Authenticated) | ดึงรายการหมวดหมู่อาการเสียและอาการเสียย่อยทั้งหมด |
-| `GET` | `/api/tracking/stream/:trackingToken` | Public | สตรีมสถานะงานซ่อมแบบเรียลไทม์ด้วย Server-Sent Events (SSE) โดยใช้ `trackingToken` ของใบสั่งซ่อม |
-| `POST` | `/api/webhook/line` | Public (ตรวจสอบ Signature) | รับ Webhook Event จาก LINE Messaging API สำหรับการผูกบัญชี LINE ลูกค้า และการกดปุ่มอนุมัติ/ปฏิเสธใบเสนอราคาผ่าน Postback |
+| `POST` | `/api/tracking/search` | Public (Rate Limited) | ค้นหาสถานะด้วยเลขเดียว (`REP-YYMM-NNNN` หรือเลขใบรับเครื่องตัวเลข 1–10 หลัก ไม่รับเบอร์โทร) ตอบเฉพาะ whitelist: เลขใบงาน สถานะ ป้ายไทย วันรับเครื่อง ยี่ห้อ/รุ่น timeline ไม่พบทุกกรณีตอบ 404 body เดียวกัน จำกัด `PUBLIC_SEARCH_RATE_LIMIT_MAX` ครั้ง/15 นาที/IP |
+| `POST` | `/api/tracking/subscribe-line` | Public (Rate Limited) | ลูกค้าผูกบัญชี LINE กับใบงาน (จาก LIFF) ด้วย `query`, `phone`, `lineAccessToken` server ตรวจ token กับ LINE เอง (`LINE_LOGIN_CHANNEL_ID`) ผิดทุกกรณีตอบข้อความเดียวกัน ผูกซ้ำได้ 1 บัญชีหลายใบงาน / 1 ใบงานหลายบัญชี จำกัด 10 ครั้ง/15 นาที/IP |
+| `GET` | `/api/tracking/stream/:trackingToken` | Public | สตรีมสถานะงานซ่อมแบบเรียลไทม์ด้วย Server-Sent Events (SSE) โดยใช้ `trackingToken` ของใบสั่งซ่อม แต่ละ event มีแค่ `{ status, updatedAt }` |
+| `POST` | `/api/webhook/line` | Public (ตรวจสอบ Signature) | รับ Webhook Event จาก LINE Messaging API สำหรับการผูกบัญชี LINE กับใบงาน (พิมพ์ `<เลขใบงานหรือเลขใบรับเครื่อง> <เบอร์โทร>` ผิดเกิน 5 ครั้ง/15 นาทีต่อบัญชีจะถูกพักไว้) และการกดปุ่มอนุมัติ/ปฏิเสธใบเสนอราคาผ่าน Postback (ปิดไว้ตาม `CUSTOMER_LINE_APPROVAL_ENABLED`) ลูกค้าที่ผูกไว้ได้ข้อความ LINE ทุกครั้งที่สถานะเปลี่ยน (ไม่มีราคา/รายการ) |
 
 ---
 
@@ -250,9 +279,10 @@ stateDiagram-v2
 1. **การซ่อน `trackingToken` จากช่างซ่อม (`TECHNICIAN`):**
    * ระบบมี Helper กลาง (`sanitizeForRole`) ทำการตรวจสอบและตัดฟิลด์ `trackingToken` ออกจาก Response ทุกระดับชั้น (Deep Redaction) สำหรับผู้เรียกที่มีบทบาท `TECHNICIAN` ในทุก Endpoint (`PATCH /status`, `POST /items`, `PATCH /items/:itemId/complete`, `PATCH /employees/:id/status`)
    * ป้องกันไม่ให้ช่างนำโทเคนติดตามไปเปิดดูหน้าของลูกค้า หรือส่งต่อให้บุคคลภายนอกโดยไม่ได้รับอนุญาต
-2. **การปกป้อง `customer.lineUserId`:**
-   * ข้อมูล `lineUserId` ของลูกค้าถือเป็นข้อมูลส่วนบุคคลอ่อนไหว (PII) API ทุก Endpoint (`POST /repairs`, `PATCH /status`, `GET /repairs/:id`, `PATCH /employees/:id/status`) จะ**ไม่ส่งฟิลด์ `customer.lineUserId` ออกมาใน Response ให้กับทุกบทบาท**
-   * ระบบจะแปลงเป็นฟิลด์ boolean `customer.lineLinked` (`true` เมื่อลูกค้าผูกบัญชี LINE แล้ว, `false` เมื่อยังไม่ได้ผูก) เพื่อให้หน้าจอแสดงผลสถานะได้โดยไม่ต้องเปิดเผยรหัสผู้ใช้ LINE
+2. **การปกป้อง LINE userId ของลูกค้า:**
+   * ตั้งแต่ Phase 6 บัญชี LINE ผูกกับ "ใบงาน" (ตาราง `OrderLineSubscription`) ไม่ใช่กับลูกค้า (คอลัมน์ `Customer.lineUserId` ถูกย้ายข้อมูลแล้วลบออก) API ไม่ส่ง `lineUserId` ออกไปให้ทุกบทบาท
+   * ระบบส่งฟิลด์ boolean `customer.lineLinked` (`true` เมื่อใบงานนี้มีบัญชี LINE ผูกอย่างน้อย 1 บัญชี) เพื่อให้หน้าจอแสดงผลได้โดยไม่เปิดเผยรหัสผู้ใช้ LINE
+   * API สาธารณะ (`/api/tracking/*`) สร้าง response แบบ whitelist (`toPublicTrackingView`) ไม่มีชื่อ เบอร์ ที่อยู่ ชื่อช่าง ราคา/รายการ หมายเหตุ trackingToken หรือ serial
 
 ---
 
@@ -339,3 +369,12 @@ stateDiagram-v2
 2. **การชนกันของเลขที่ใบสั่งซ่อมและการข้ามลำดับ Sequence ขณะเปิดงานพร้อมกัน (Concurrency Collision):**
    * ในการทดสอบเปิดใบสั่งซ่อมพร้อมกันจำนวนมากในเสี้ยววินาทีเดียวกัน (`test:concurrency`) จะมีข้อความแจ้งเตือน `Unique constraint failed on the constraint: RepairOrder_jobNumber_key` ปรากฏในคอนโซล
    * **พฤติกรรมนี้เป็นกลไกที่ถูกต้องของระบบ:** เนื่องจากระบบใช้หมายเลขใบงานรูปแบบ `REP-YYMM-XXXX` ซึ่งคำนวณจาก Sequence สูงสุดในขณะนั้น เมื่อเกิดคำขอพร้อมกัน Prisma Transaction จะตรวจพบการชนกัน และกลไก Retry Loop ใน `RepairService.createRepairOrder` จะทำการ Rollback และคำนวณ Sequence ถัดไปใหม่อัตโนมัติจนสำเร็จครบทุกรายการ (ผลลัพธ์คือทุกงานได้รับ Job Number ที่ไม่ซ้ำกันอย่างถูกต้อง แต่อาจมีหมายเลข Sequence บางลำดับถูกข้ามไปอันเนื่องมาจากการ Rollback)
+
+## รูปถ่ายใบงาน (Phase 7, SRS 2.3)
+
+* รูปเก็บที่โฟลเดอร์ `IMAGE_STORAGE_DIR` (ค่าเริ่มต้น `apps/api/data/uploads`) โดยฐานข้อมูลเก็บเฉพาะ path แบบ relative และไม่มี API ใดส่ง path นี้ออกไป รูปไม่มี static serving ไม่อยู่ในหน้าค้นหาสาธารณะหรือ SSE
+* **ตอน deploy โฟลเดอร์รูปต้องเป็นโวลุ่ม (volume) แยกจาก container** ไม่อย่างนั้นรูปจะหายเมื่อสร้าง container ใหม่ และโฟลเดอร์นี้ถูก ignore จาก git
+* ระบบลบรูปอัตโนมัติเมื่อใบงานปิด (ส่งมอบ/ยกเลิก) ครบ `IMAGE_RETENTION_DAYS` วัน (ค่าเริ่มต้น 30 วัน นับจาก `closedAt` ไม่ใช่วันอัปโหลด) ใบงานที่ยังเปิดอยู่ไม่ถูกลบ ฟังก์ชัน `purgeExpiredImages` ถูกตั้งเวลาให้ทำงานใน Phase 8
+* **ไฟล์สำรอง (backup) ของโฟลเดอร์รูปต้องไม่เก็บไว้นานกว่าระยะเก็บเดียวกัน** (30 วันหลังปิดงาน) เพื่อให้เป็นไปตาม PDPA
+* หลังรูปถูกลบแล้ว **จะไม่มีรูปสภาพเครื่องไว้พิสูจน์ย้อนหลัง** ใบกระดาษยังเป็นหลักฐานหลักของร้าน
+* ระบบใช้ `multer` (รับไฟล์ในหน่วยความจำ) และ `sharp` (ตรวจชนิดไฟล์จากเนื้อจริง หมุนตาม EXIF ตัด metadata ย่อรูป และกันรูปที่ใหญ่ผิดปกติเกิน 50 ล้านพิกเซล)

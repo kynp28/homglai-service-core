@@ -2,6 +2,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import prisma from '@homglai/db';
 import { assertSafeDatabaseUrl } from '../src/utils/test-safety';
+import { getBangkokDateOnly } from '../src/utils/date';
 
 const API_BASE = 'http://localhost:4000/api';
 
@@ -26,9 +27,14 @@ async function main() {
   await prisma.statusLog.deleteMany({});
   await prisma.repairItem.deleteMany({});
   await prisma.repairOrderSymptom.deleteMany({});
+  await prisma.repairOrderHelper.deleteMany({});
+  await prisma.repairOrderImage.deleteMany({});
+  await prisma.orderLineSubscription.deleteMany({});
   await prisma.repairOrder.deleteMany({});
   await prisma.machine.deleteMany({});
   await prisma.customer.deleteMany({});
+  // Phase 3+: notifications reference employees
+  await prisma.notification.deleteMany({});
 
   // Clean up any extra employees created during other tests
   await prisma.employee.deleteMany({
@@ -79,12 +85,13 @@ async function main() {
   console.log(`All ${uniqueJobNumbers.size} generated job numbers are strictly unique.`);
 
   const createdOrderIds = intakeSuccesses.map((r: any) => r.id);
+  // Phase 4 (SRS 3.3): assignment reserves the job (status stays NEW, technicianId set) until accepted
   const inspectingOrders = await prisma.repairOrder.findMany({
-    where: { id: { in: createdOrderIds }, status: 'INSPECTING' },
+    where: { id: { in: createdOrderIds }, status: 'NEW', technicianId: { not: null } },
     select: { id: true, technicianId: true },
   });
 
-  console.log(`Initial assigned orders in INSPECTING status: ${inspectingOrders.length} (Expected: 5)`);
+  console.log(`Initial reserved orders (NEW + technician): ${inspectingOrders.length} (Expected: 5)`);
   if (inspectingOrders.length !== 5) {
     throw new Error(`Expected exactly 5 orders assigned to 5 available technicians, got: ${inspectingOrders.length}`);
   }
@@ -124,6 +131,9 @@ async function main() {
     await prisma.statusLog.deleteMany({});
     await prisma.repairItem.deleteMany({});
     await prisma.repairOrderSymptom.deleteMany({});
+    await prisma.repairOrderHelper.deleteMany({});
+    await prisma.repairOrderImage.deleteMany({});
+    await prisma.orderLineSubscription.deleteMany({});
     await prisma.repairOrder.deleteMany({});
 
     // 2. Temporarily set all technicians to BUSY so no orders are auto-assigned during creation
@@ -140,6 +150,7 @@ async function main() {
           jobNumber: `REP-RND${round}-${m + 1}`,
           trackingToken: crypto.randomBytes(24).toString('base64url'),
           status: 'NEW',
+          receivedDate: getBangkokDateOnly(),
           customerId: contentionCustomer.id,
           machineId: contentionMachine.id,
           technicianId: null,
@@ -161,7 +172,7 @@ async function main() {
 
     // 5. Query assigned orders
     const roundAssignedOrders = await prisma.repairOrder.findMany({
-      where: { id: { in: roundOrderIds }, status: 'INSPECTING' },
+      where: { id: { in: roundOrderIds }, status: 'NEW', technicianId: { not: null } },
       select: { id: true, technicianId: true },
     });
 
@@ -191,12 +202,14 @@ async function main() {
   // -------------------------------------------------------------------------
   console.log('[Test 3] Testing race condition on simultaneous item resolution...');
   const orderWithTech = await prisma.repairOrder.findFirst({
-    where: { status: 'INSPECTING', technicianId: { not: null } },
+    where: { status: 'NEW', technicianId: { not: null }, acknowledgedAt: null },
   });
 
   if (!orderWithTech) {
-    throw new Error('No active order with technician found for Test 3');
+    throw new Error('No reserved order found for Test 3');
   }
+  // Phase 4: accept the reserved job (ADMIN on behalf of the technician) before adding items
+  await axios.post(`${API_BASE}/repairs/${orderWithTech.id}/accept`, {}, { headers: authHeaders });
 
   const addItemRes = await axios.post(
     `${API_BASE}/repairs/${orderWithTech.id}/items`,

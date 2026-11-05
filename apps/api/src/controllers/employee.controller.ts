@@ -37,7 +37,7 @@ export class EmployeeController {
       }
 
       const data = updateEmployeeSchema.parse(req.body);
-      const employee = await EmployeeService.updateEmployee(id, data);
+      const employee = await EmployeeService.updateEmployee(id, data, req.user!.employeeId);
       res.status(200).json({ status: 'success', data: employee });
     } catch (error) {
       next(error);

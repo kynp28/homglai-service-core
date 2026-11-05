@@ -2,6 +2,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import prisma from '@homglai/db';
 import { assertSafeDatabaseUrl } from '../src/utils/test-safety';
+import { getBangkokDateOnly } from '../src/utils/date';
 
 const API_BASE = 'http://localhost:4000/api';
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || 'test-line-secret';
@@ -67,14 +68,20 @@ async function runSmokeTests() {
   await prisma.statusLog.deleteMany({});
   await prisma.repairItem.deleteMany({});
   await prisma.repairOrderSymptom.deleteMany({});
+  await prisma.repairOrderHelper.deleteMany({});
+  await prisma.repairOrderImage.deleteMany({});
+  await prisma.orderLineSubscription.deleteMany({});
   await prisma.repairOrder.deleteMany({});
   await prisma.machine.deleteMany({});
   await prisma.customer.deleteMany({});
+  // Phase 3+: notifications reference employees; clear them before removing temporary employees
+  await prisma.notification.deleteMany({});
   await prisma.employee.deleteMany({
     where: { id: { notIn: [1, 2, 3, 4, 5, 6, 7] } },
   });
+  // Phase 4: queue order is availableSince ASC, id ASC — reset so tech1 (id 3) is first, as before
   await prisma.employee.updateMany({
-    data: { status: 'AVAILABLE', isActive: true },
+    data: { status: 'AVAILABLE', isActive: true, availableSince: null },
   });
 
   // -------------------------------------------------------------------
@@ -319,7 +326,7 @@ async function runSmokeTests() {
   await axios.patch(`${API_BASE}/employees/4`, { role: 'TECHNICIAN' }, { headers: adminHeaders });
   await prisma.employee.updateMany({
     where: { id: { in: [3, 4, 5, 6, 7] } },
-    data: { status: 'AVAILABLE' },
+    data: { status: 'AVAILABLE', availableSince: null },
   });
 
   // -------------------------------------------------------------------
@@ -360,7 +367,19 @@ async function runSmokeTests() {
   const order = intakeRes.data.data;
   assertCustomerPrivacy('POST /api/repairs (Intake)', order.customer, false);
   console.log(`Repair Order created: ${order.jobNumber} (ID: ${order.id})`);
-  console.log(`Assigned technician: ${order.technician ? order.technician.name : 'None'} (Status: ${order.status})`);
+  console.log(`Reserved for technician: ${order.technician ? order.technician.name : 'None'} (Status: ${order.status})`);
+
+  // Phase 4 (SRS 3.3): assignment reserves the job (status stays NEW); the technician must accept it
+  if (order.status !== 'NEW' || order.technicianId !== 3) {
+    throw new Error(`Expected order reserved for Tech 1 with status NEW, got technicianId=${order.technicianId} status=${order.status}`);
+  }
+  const acceptRes = await axios.post(`${API_BASE}/repairs/${order.id}/accept`, {}, { headers: tech1Headers });
+  if (acceptRes.data.data.status !== 'INSPECTING') {
+    throw new Error(`Expected INSPECTING after accept, got ${acceptRes.data.data.status}`);
+  }
+  assertNoTrackingToken('POST /api/repairs/:id/accept (Technician)', acceptRes.data.data);
+  order.status = acceptRes.data.data.status;
+  console.log(`Technician accepted the job (Status: ${order.status}).`);
 
   // Machine Deduplication check
   const secondIntakeRes = await axios.post(
@@ -602,15 +621,26 @@ async function runSmokeTests() {
     { status: 'REPAIRING', note: 'Customer reported minor leak after repair' },
     { headers: adminHeaders }
   );
+  // Phase 5b (owner decision): a rework is reserved like a new job and must be accepted
+  // (previously the technician was set BUSY silently, without any notification).
+  const reservedRework = await prisma.repairOrder.findUnique({ where: { id: order.id } });
+  if (reservedRework?.status !== 'NEW' || !reservedRework.technicianId || reservedRework.acknowledgedAt !== null) {
+    throw new Error('Rework was not reserved for a technician');
+  }
+  const reservedTech = await prisma.employee.findUnique({ where: { id: reservedRework.technicianId } });
+  if (reservedTech?.status !== 'RESERVED') {
+    throw new Error('Rework technician was not RESERVED');
+  }
+  await axios.post(`${API_BASE}/repairs/${order.id}/accept`, {}, { headers: adminHeaders });
   const reworkOrder = await prisma.repairOrder.findUnique({ where: { id: order.id } });
-  if (reworkOrder?.status !== 'REPAIRING' || !reworkOrder.technicianId) {
+  if (reworkOrder?.status !== 'REPAIRING' || reworkOrder.technicianId !== reservedRework.technicianId) {
     throw new Error('Rework assignment failed');
   }
-  const reworkTech = await prisma.employee.findUnique({ where: { id: reworkOrder.technicianId } });
+  const reworkTech = await prisma.employee.findUnique({ where: { id: reworkOrder.technicianId! } });
   if (reworkTech?.status !== 'BUSY') {
     throw new Error('Rework technician was not marked BUSY');
   }
-  console.log(`Rework order resumed to REPAIRING with Tech ${reworkTech.name} set to BUSY.`);
+  console.log(`Rework reserved for Tech ${reworkTech.name}, accepted, resumed to REPAIRING (technician BUSY).`);
 
   // Complete and Deliver
   await axios.patch(
@@ -684,11 +714,12 @@ async function runSmokeTests() {
     },
   });
   await new Promise((r) => setTimeout(r, 400));
-  const unverifiedCust = await prisma.customer.findUnique({ where: { id: order.customerId } });
-  if (unverifiedCust?.lineUserId !== null) {
-    throw new Error('Expected customer.lineUserId to remain null on wrong phone binding');
+  // Phase 6: LINE accounts are linked per order (OrderLineSubscription), Customer.lineUserId no longer exists
+  const wrongPhoneSubs = await prisma.orderLineSubscription.count({ where: { repairOrderId: order.id } });
+  if (wrongPhoneSubs !== 0) {
+    throw new Error('Expected no LINE subscription after a wrong phone binding');
   }
-  console.log('Negative passed: Binding with wrong phone left customer.lineUserId as null.');
+  console.log('Negative passed: Binding with wrong phone created no LINE subscription.');
 
   // 10.2 Valid binding
   const validBindingBody = {
@@ -708,11 +739,13 @@ async function runSmokeTests() {
     },
   });
   await new Promise((r) => setTimeout(r, 400));
-  const boundCust = await prisma.customer.findUnique({ where: { id: order.customerId } });
-  if (boundCust?.lineUserId !== 'U_LINE_REAL_CUSTOMER') {
+  const boundSub = await prisma.orderLineSubscription.findFirst({
+    where: { repairOrderId: order.id, lineUserId: 'U_LINE_REAL_CUSTOMER' },
+  });
+  if (!boundSub) {
     throw new Error('LINE binding failed');
   }
-  console.log(`LINE binding succeeded: Customer lineUserId is ${boundCust.lineUserId}.`);
+  console.log('LINE binding succeeded: order subscribed by U_LINE_REAL_CUSTOMER.');
 
   // 10.3 Binding from a different LINE account on same order -> Rejected
   const hijackBody = {
@@ -732,11 +765,15 @@ async function runSmokeTests() {
     },
   });
   await new Promise((r) => setTimeout(r, 400));
-  const recheckedCust = await prisma.customer.findUnique({ where: { id: order.customerId } });
-  if (recheckedCust?.lineUserId !== 'U_LINE_REAL_CUSTOMER') {
-    throw new Error('Security flaw: LINE account was hijacked by another LINE user!');
+  // Phase 6 (SRS 3.2): one order may be followed by several LINE accounts (e.g. owner and shop staff),
+  // each proving the phone number on file. The first account must stay linked.
+  const subsAfterSecond = (
+    await prisma.orderLineSubscription.findMany({ where: { repairOrderId: order.id }, orderBy: { id: 'asc' } })
+  ).map((sub) => sub.lineUserId);
+  if (JSON.stringify(subsAfterSecond) !== JSON.stringify(['U_LINE_REAL_CUSTOMER', 'U_LINE_HIJACKER'])) {
+    throw new Error(`Expected both phone-verified accounts linked, got ${JSON.stringify(subsAfterSecond)}`);
   }
-  console.log('Negative passed: Re-binding from another LINE account was safely blocked.');
+  console.log('Positive passed: A second phone-verified LINE account was added; the first stays linked.');
 
   // 10.4 Non-owner postback -> DB must NOT change
   const nonOwnerPostback = {
@@ -865,6 +902,7 @@ async function runSmokeTests() {
       jobNumber: `REP-TEST-T2-${Date.now()}`,
       trackingToken: crypto.randomBytes(24).toString('base64url'),
       status: 'REPAIRING',
+      receivedDate: getBangkokDateOnly(),
       customerId: order.customerId,
       machineId: order.machineId,
       technicianId: 4, // Tech 2
@@ -876,7 +914,7 @@ async function runSmokeTests() {
   if (tech1OrderIds.includes(tech2Order.id)) {
     throw new Error('Security flaw: Technician 1 can see Technician 2 assigned order in list!');
   }
-  console.log('Positive passed: Technician list visibility strictly restricted to own assigned jobs + NEW jobs.');
+  console.log('Positive passed: Technician list visibility strictly restricted to own assigned jobs (no unassigned NEW jobs).');
 
   // 13.6 GET /api/repairs/:id Details & Relations
   const detailAdmin = await axios.get(`${API_BASE}/repairs/${order.id}`, { headers: adminHeaders });
@@ -909,7 +947,9 @@ async function runSmokeTests() {
   if (tech2View.status !== 200) {
     throw new Error('Expected 200 when Technician views own order');
   }
-  assertCustomerPrivacy('GET /api/repairs/:id (Technician)', tech2View.data.data.customer, true);
+  // Phase 6: lineLinked is per order. tech2Order is another order of the same customer and nobody linked
+  // LINE to it (the customer linked only `order` in Test 10), so it is false here.
+  assertCustomerPrivacy('GET /api/repairs/:id (Technician)', tech2View.data.data.customer, false);
   assertNoTrackingToken('GET /api/repairs/:id (Technician)', tech2View.data.data);
   console.log('Positive passed: Technician viewing own order succeeds with trackingToken safely hidden.');
 
@@ -959,6 +999,9 @@ async function runSmokeTests() {
   assertNoTrackingToken('PATCH /api/employees/:id/status (Technician)', tech1StatusData);
   console.log('Positive passed: PATCH /api/employees/:id/status omits trackingToken deeply and protects customer privacy.');
 
+  // Phase 4: the reserved job must be accepted before items can be added
+  await axios.post(`${API_BASE}/repairs/${privacyOrder.id}/accept`, {}, { headers: tech1Headers });
+
   // 14.2 Endpoint 2: POST /api/repairs/:id/items (Technician adds item)
   const techAddItemRes = await axios.post(
     `${API_BASE}/repairs/${privacyOrder.id}/items`,
@@ -986,14 +1029,21 @@ async function runSmokeTests() {
   console.log('Positive passed: PATCH /api/repairs/:id/items/:itemId/complete omits trackingToken deeply for Technician.');
 
   // 14.4 Endpoint 4: PATCH /api/repairs/:id/status (Technician completes order)
-  const techCompleteOrderRes = await axios.patch(
-    `${API_BASE}/repairs/${privacyOrder.id}/status`,
-    { status: 'COMPLETED' },
+  // Phase 5: technicians submit finished work with POST /complete (PATCH -> COMPLETED is 403 for them)
+  try {
+    await axios.patch(`${API_BASE}/repairs/${privacyOrder.id}/status`, { status: 'COMPLETED' }, { headers: tech1Headers });
+    throw new Error('Expected 403 when a technician PATCHes status to COMPLETED');
+  } catch (err: any) {
+    if (err.response?.status !== 403) throw err;
+  }
+  const techCompleteOrderRes = await axios.post(
+    `${API_BASE}/repairs/${privacyOrder.id}/complete`,
+    { completionSummary: 'เปลี่ยนโซลินอยด์วาล์ว ทดสอบแรงดันแล้ว' },
     { headers: tech1Headers }
   );
-  assertCustomerPrivacy('PATCH /api/repairs/:id/status (Technician)', techCompleteOrderRes.data.data.customer, false);
-  assertNoTrackingToken('PATCH /api/repairs/:id/status (Technician)', techCompleteOrderRes.data.data);
-  console.log('Positive passed: PATCH /api/repairs/:id/status omits trackingToken deeply for Technician.');
+  assertCustomerPrivacy('POST /api/repairs/:id/complete (Technician)', techCompleteOrderRes.data.data.customer, false);
+  assertNoTrackingToken('POST /api/repairs/:id/complete (Technician)', techCompleteOrderRes.data.data);
+  console.log('Positive passed: POST /api/repairs/:id/complete omits trackingToken deeply for Technician.');
 
   // 14.5 Admin transitions status -> ADMIN still receives trackingToken
   const adminReworkRes = await axios.patch(
@@ -1008,9 +1058,8 @@ async function runSmokeTests() {
   console.log('Positive passed: ADMIN retains trackingToken on PATCH /api/repairs/:id/status.');
 
   // 14.6 Link customer LINE and test GET /api/repairs/:id across 3 roles
-  await prisma.customer.update({
-    where: { id: privacyOrder.customerId },
-    data: { lineUserId: 'U_PRIVACY_LINE_USER_123' },
+  await prisma.orderLineSubscription.create({
+    data: { repairOrderId: privacyOrder.id, lineUserId: 'U_PRIVACY_LINE_USER_123' },
   });
 
   const getAdminPrivacy = await axios.get(`${API_BASE}/repairs/${privacyOrder.id}`, { headers: adminHeaders });

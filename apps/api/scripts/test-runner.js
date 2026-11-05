@@ -2,6 +2,10 @@ const { spawn, execSync } = require('child_process');
 const path = require('path');
 const axios = require('axios');
 
+// Load MYSQL_ROOT_PASSWORD (and friends) from the repo-root .env used by docker-compose.
+// Variables already set in the shell always win (dotenv never overrides them).
+require('dotenv').config({ path: path.resolve(__dirname, '../../../.env') });
+
 const pnpmCmd = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
 const testDbContainer = process.env.TEST_DB_CONTAINER || 'homglai-mysql-test';
@@ -10,7 +14,7 @@ const testDbPassword = process.env.TEST_DB_PASSWORD || process.env.MYSQL_ROOT_PA
 const testDbHost = process.env.TEST_DB_HOST || '127.0.0.1';
 const testDbPort = process.env.TEST_DB_PORT || '3307';
 
-const defaultTestDbUrl = `mysql://${testDbUser}:${testDbPassword}@${testDbHost}:${testDbPort}/homglai_db_test`;
+const defaultTestDbUrl = `mysql://${encodeURIComponent(testDbUser)}:${encodeURIComponent(testDbPassword)}@${testDbHost}:${testDbPort}/homglai_db_test`;
 const testDatabaseUrl = process.env.DATABASE_URL || defaultTestDbUrl;
 
 function assertSafeDatabaseUrl(url) {
@@ -49,6 +53,12 @@ const testEnv = {
   LINE_CHANNEL_SECRET: process.env.LINE_CHANNEL_SECRET || 'test-line-secret',
   LINE_CHANNEL_ACCESS_TOKEN: process.env.LINE_CHANNEL_ACCESS_TOKEN || 'test-channel-access-token',
   SEED_DEFAULT_PASSWORD: process.env.SEED_DEFAULT_PASSWORD || 'SecretPassword123!',
+  // Phase 6: the API under test accepts mock LIFF tokens ("mock:<userId>"); refused unless NODE_ENV=test
+  NODE_ENV: 'test',
+  LINE_IDENTITY_VERIFIER: 'mock',
+  // Phase 7: test photos go to their own folder (never the real upload folder)
+  IMAGE_STORAGE_DIR: './data/test-uploads',
+  LINE_LOGIN_CHANNEL_ID: process.env.LINE_LOGIN_CHANNEL_ID || 'test-login-channel',
 };
 
 async function waitForHealth(timeoutMs = 20000) {
@@ -103,17 +113,44 @@ async function run() {
     await waitForHealth();
     console.log('>>> [Test Runner] API Server is READY!\n');
 
-    console.log('>>> [Test Runner] 1/4 Running Timezone Rollover Tests...');
+    console.log('>>> [Test Runner] 1/13 Running Timezone Rollover Tests...');
     execSync(`${pnpmCmd} test:timezone`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 2/4 Running Safe 3-Step Migration Test (>= 5 Rows Legacy Data)...');
+    console.log('\n>>> [Test Runner] 2/13 Running Business Hours Unit Tests...');
+    execSync(`${pnpmCmd} test:business-hours`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 3/13 Running Config Validation Unit Tests...');
+    execSync(`${pnpmCmd} test:config`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 4/13 Running Safe 3-Step Migration Test (>= 5 Rows Legacy Data)...');
     execSync(`${pnpmCmd} test:migration`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 3/4 Running Comprehensive Smoke Tests (Positive & Negative)...');
+    console.log('\n>>> [Test Runner] 5/13 Running Comprehensive Smoke Tests (Positive & Negative)...');
     execSync(`${pnpmCmd} test:smoke`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 4/4 Running High-Concurrency & Contention Tests (20 Rounds & Race Tests)...');
+    console.log('\n>>> [Test Runner] 6/13 Running High-Concurrency & Contention Tests (20 Rounds & Race Tests)...');
     execSync(`${pnpmCmd} test:concurrency`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 7/13 Running Phase 2 Intake / RepairItem v2 / Visibility Tests...');
+    execSync(`${pnpmCmd} test:intake`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 8/13 Running Phase 3 Notifier / Notifications Tests...');
+    execSync(`${pnpmCmd} test:notifications`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 9/13 Running Phase 4 Technician Queue Tests...');
+    execSync(`${pnpmCmd} test:queue`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 10/13 Running Phase 5 Pricing / Complete / Still-Working Tests...');
+    execSync(`${pnpmCmd} test:pricing`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 11/13 Running Phase 5b Job Numbers / Holidays / Day Off / Not Repaired / Payment Tests...');
+    execSync(`${pnpmCmd} test:shop-rules`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 12/13 Running Phase 6 Public Search / PDPA / LINE Link Tests...');
+    execSync(`${pnpmCmd} test:privacy`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 13/13 Running Phase 7 Image Upload / Download / Purge Tests...');
+    execSync(`${pnpmCmd} test:images`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
     console.log('\n=============================================================');
     console.log('>>> [Test Runner] ALL TEST SUITES PASSED WITH 100% SUCCESS! <<<');

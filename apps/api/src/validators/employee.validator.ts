@@ -18,6 +18,8 @@ export const updateEmployeeSchema = z.object({
   name: z.string().trim().min(1, 'Name cannot be empty').max(100).optional(),
   role: z.enum(['ADMIN', 'TECHNICIAN', 'RECEPTIONIST']).optional(),
   isActive: z.boolean().optional(),
+  // Fixed weekly day off, 0 = Sunday ... 6 = Saturday; null clears it
+  weeklyDayOff: z.number().int().min(0).max(6).nullable().optional(),
 });
 
 export const resetEmployeePasswordSchema = z.object({
