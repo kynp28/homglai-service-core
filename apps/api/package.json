@@ -22,6 +22,7 @@
     "test:shop-rules": "tsx scripts/test-shop-rules.ts",
     "test:privacy": "tsx scripts/test-privacy.ts",
     "test:images": "tsx scripts/test-images.ts",
+    "test:jobs": "tsx scripts/test-jobs.ts",
     "test:all": "node scripts/test-runner.js"
   },
   "dependencies": {
