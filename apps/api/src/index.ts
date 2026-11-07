@@ -16,6 +16,7 @@ import symptomRoutes from './routes/symptom.routes';
 import notificationRoutes from './routes/notification.routes';
 import holidayRoutes from './routes/holiday.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
+import { startJobScheduler } from './jobs/scheduler';
 
 dotenv.config();
 
@@ -101,7 +102,28 @@ app.use(notFoundHandler);
 // Centralized error handling
 app.use(errorHandler);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`[server]: API Server is running at http://localhost:${port}`);
   console.log(`[server]: Swagger Docs available at http://localhost:${port}/api-docs`);
 });
+
+// Background jobs (Phase 8) start after the server listens
+const jobScheduler = startJobScheduler();
+
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server]: ${signal} received, shutting down...`);
+  try {
+    await jobScheduler?.stop(); // lets a round in progress finish
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await prisma.$disconnect();
+  } catch (err: any) {
+    console.error('[server]: error during shutdown:', err?.message || err);
+  } finally {
+    process.exit(0);
+  }
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));

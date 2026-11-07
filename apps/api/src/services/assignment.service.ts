@@ -142,7 +142,8 @@ export class AssignmentService {
   static async requeueOrdersOfTechnician(
     tx: Tx,
     technicianId: number,
-    actorId: number,
+    /** Employee who triggered it; null when the background safety net (Phase 8 job) does it */
+    actorId: number | null,
     reason: OrdersRequeuedDigestEvent['reason']
   ): Promise<RequeuedOrder[]> {
     const technician = await tx.employee.findUnique({ where: { id: technicianId }, select: { name: true } });
