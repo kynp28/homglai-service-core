@@ -8,7 +8,7 @@ import { getBangkokDateOnly, dateOnlyToDate } from '../utils/date';
 import { ACCEPTED_WORK_STATUSES, AssignmentService } from './assignment.service';
 import { LineWebhookService } from './line-webhook.service';
 import { customerResponseSelect, lineLinkCountInclude, withPublicCustomer } from '../utils/customer-view';
-import { computePayableAmount, computeTotalAmount, paymentSummary, toRepairItemView } from '../utils/repair-item-view';
+import { computePayableAmount, computeTotalAmount, itemAmount, paymentSummary, toRepairItemView } from '../utils/repair-item-view';
 import { activityFields, recordActivity } from '../utils/activity';
 import { allocateJobNumber, resyncJobNumberCounter } from '../utils/job-number';
 import { computeAllowedActions } from '../utils/allowed-actions';
@@ -527,7 +527,14 @@ export class RepairService {
   ) {
     const unitPrice = new Prisma.Decimal(data.unitPrice.toFixed(2));
 
-    const { order, item, previousStatus } = await prisma.$transaction(async (tx) => {
+    const threshold = getAppConfig().priceApprovalThreshold;
+
+    const { order, item, previousStatus, autoApproved } = await prisma.$transaction(async (tx) => {
+      // Row lock: the order total used for the approval threshold must not change under us
+      const locked = await lockOrderRow(tx, repairOrderId);
+      if (!locked) {
+        throw new AppError(404, 'Repair order not found');
+      }
       const existingOrder = await tx.repairOrder.findUnique({
         where: { id: repairOrderId },
       });
@@ -550,7 +557,23 @@ export class RepairService {
         );
       }
 
-      // 1. Create the pending repair item using precise Decimal representation
+      // Price confirmation threshold (owner decision 2026-11-07): the customer is called only when the
+      // order total (all item types, REJECTED excluded, this item included) reaches the threshold.
+      // While another item is still PENDING the order is already waiting, so the new item waits too.
+      const now = new Date();
+      const currentItems = await tx.repairItem.findMany({
+        where: { repairOrderId, status: { in: ['PENDING', 'APPROVED', 'COMPLETED'] } },
+        select: { quantity: true, unitPrice: true, status: true },
+      });
+      const newAmount = unitPrice.mul(data.quantity);
+      const orderTotal = currentItems.reduce((sum, i) => sum.add(itemAmount(i)), newAmount);
+      const autoApprove =
+        threshold > 0 &&
+        orderTotal.lt(threshold) &&
+        !currentItems.some((i) => i.status === 'PENDING') &&
+        existingOrder.status !== 'WAITING_APPROVAL';
+
+      // 1. Create the item (PENDING, or APPROVED by the system below the threshold)
       const createdItem = await tx.repairItem.create({
         data: {
           repairOrderId,
@@ -559,52 +582,65 @@ export class RepairService {
           unitPrice,
           barcode: data.barcode ?? null,
           itemType: data.itemType,
-          status: 'PENDING',
+          status: autoApprove ? 'APPROVED' : 'PENDING',
+          ...(autoApprove
+            ? {
+                resolvedAt: now,
+                resolutionNote: `อนุมัติอัตโนมัติ: ยอดรวมใบงาน ${orderTotal.toFixed(2)} บาท ต่ำกว่า ${threshold} บาท`,
+              }
+            : {}),
         },
       });
 
-      // 2. Set order status to WAITING_APPROVAL (adding an item counts as activity, SRS 3.6).
+      // 2. Order status: WAITING_APPROVAL when the customer must confirm, otherwise REPAIRING
+      //    (adding an item counts as activity, SRS 3.6).
       //    Conditional: fails if the order changed status or technician concurrently.
+      const target: RepairStatus = autoApprove ? 'REPAIRING' : 'WAITING_APPROVAL';
       const guarded = await tx.repairOrder.updateMany({
         where: { id: repairOrderId, status: existingOrder.status, technicianId: existingOrder.technicianId },
-        data: { status: 'WAITING_APPROVAL', ...activityFields(new Date()) },
+        data: { status: target, ...activityFields(now) },
       });
       if (guarded.count === 0) {
         throw new AppError(409, 'Repair order changed concurrently; item was not added');
       }
       const updatedOrder = await tx.repairOrder.findUniqueOrThrow({ where: { id: repairOrderId } });
 
-      // 3. Log the status transition
+      // 3. Log the item (and status transition)
+      const itemText = `(${data.itemType}): ${data.name.trim()} x${data.quantity} @ ${unitPrice.toFixed(2)} THB`;
       await tx.statusLog.create({
         data: {
           repairOrderId,
-          status: 'WAITING_APPROVAL',
+          status: target,
           changedById: data.technicianId,
-          note: `Added quotation item (${data.itemType}): ${data.name.trim()} x${data.quantity} @ ${unitPrice.toFixed(2)} THB`,
+          note: autoApprove
+            ? `Added item ${itemText} — auto-approved (order total ${orderTotal.toFixed(2)} THB below ${threshold} THB)`
+            : `Added quotation item ${itemText}`,
         },
       });
 
-      return { order: updatedOrder, item: createdItem, previousStatus: existingOrder.status };
+      return { order: updatedOrder, item: createdItem, previousStatus: existingOrder.status, autoApproved: autoApprove };
     });
 
     const itemView = toRepairItemView(item);
 
     // Broadcast SSE strictly post-commit (exclude sensitive technician/customer IDs)
     // Public SSE carries { status, updatedAt } only; customers get a LINE status message when it changed
-    if (previousStatus !== 'WAITING_APPROVAL') {
+    if (previousStatus !== order.status) {
       OrderEvents.statusChanged(order);
     } else {
       OrderEvents.touched(order);
     }
 
-    // Send push notification to LINE customer with approval actions
-    LineWebhookService.notifyCustomerNewItem(repairOrderId, {
-      id: item.id,
-      name: item.quantity > 1 ? `${item.name} x${item.quantity}` : item.name,
-      price: itemView.amount,
-    }).catch(() => {});
+    // Send push notification to LINE customer with approval actions (only when confirmation is needed)
+    if (!autoApproved) {
+      LineWebhookService.notifyCustomerNewItem(repairOrderId, {
+        id: item.id,
+        name: item.quantity > 1 ? `${item.name} x${item.quantity}` : item.name,
+        price: itemView.amount,
+      }).catch(() => {});
+    }
 
-    return { order, item: itemView };
+    return { order, item: itemView, autoApproved };
   }
 
   static async completeRepairItem(repairOrderId: number, itemId: number, actor: Actor) {

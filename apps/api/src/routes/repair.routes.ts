@@ -305,13 +305,18 @@ router.post('/:id/release', authenticate, requireRole('ADMIN'), RepairController
  * @openapi
  * /api/repairs/{id}/items:
  *   post:
- *     summary: Add a repair item and trigger approval loop
+ *     summary: Add a repair item (auto-approved below PRICE_APPROVAL_THRESHOLD, otherwise starts the approval loop)
  *     security:
  *       - bearerAuth: []
  *     description: |
  *       Adds an item (PART / TRAVEL_FEE / LABOR_HOURS / SERVICE_FEE) to the repair order. Accessible by the assigned
  *       TECHNICIAN or ADMIN. Response item includes quantity, unitPrice, amount (= quantity x unitPrice), itemType,
  *       barcode and the legacy `price` alias (= unitPrice, kept temporarily).
+ *       Price confirmation threshold (PRICE_APPROVAL_THRESHOLD, THB): when the order total (all item types,
+ *       REJECTED excluded, this item included) stays below it and no other item is PENDING, the item is created
+ *       APPROVED automatically and the order moves to REPAIRING (no customer call, no LINE quotation). Otherwise the
+ *       item is PENDING and the order moves to WAITING_APPROVAL. 0 (default) = every item needs confirmation.
+ *       Response data includes `autoApproved`.
  *     parameters:
  *       - in: path
  *         name: id
