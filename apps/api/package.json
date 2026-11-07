@@ -23,6 +23,9 @@
     "test:privacy": "tsx scripts/test-privacy.ts",
     "test:images": "tsx scripts/test-images.ts",
     "test:jobs": "tsx scripts/test-jobs.ts",
+    "test:e2e": "tsx scripts/test-e2e.ts",
+    "test:swagger": "tsx scripts/test-swagger.ts",
+    "test:races": "tsx scripts/test-races.ts",
     "test:all": "node scripts/test-runner.js"
   },
   "dependencies": {

@@ -334,9 +334,13 @@ async function main() {
     const probe = await search({ query: jobNumber });
     const limit = Number(probe.headers['ratelimit-limit']);
     assert(limit >= 1, `RateLimit-Limit header present (${probe.headers['ratelimit-limit']})`);
-    while (searchCalls < limit) {
+    // Earlier suites (images, e2e) also searched from this IP, so count down from the server's
+    // RateLimit-Remaining instead of this suite's own call counter
+    const remaining = Number(probe.headers['ratelimit-remaining']);
+    assert(Number.isInteger(remaining) && remaining >= 0 && remaining < limit, `RateLimit-Remaining header present (${probe.headers['ratelimit-remaining']})`);
+    for (let i = 0; i < remaining; i++) {
       const r = await search({ query: 'hello' });
-      eq(r.status, 404, `request ${searchCalls} within the limit`);
+      eq(r.status, 404, `request ${limit - remaining + i + 1} within the limit`);
     }
     eq((await search({ query: jobNumber })).status, 429, `request ${limit + 1} -> 429`);
     eq((await search({ query: jobNumber }, { 'X-Forwarded-For': '203.0.113.9' })).status, 429, 'spoofed X-Forwarded-For does not reset the limit (TRUST_PROXY=false)');

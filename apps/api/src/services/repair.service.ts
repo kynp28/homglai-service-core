@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { lockOrderRow } from '../utils/order-lock';
 import prisma, { Prisma, RepairStatus } from '@homglai/db';
 import { OrderEvents } from './order-events';
 import { AppError } from '../utils/app-error';
@@ -606,8 +607,21 @@ export class RepairService {
     return { order, item: itemView };
   }
 
-  static async completeRepairItem(repairOrderId: number, itemId: number, userId: number) {
+  static async completeRepairItem(repairOrderId: number, itemId: number, actor: Actor) {
+    const userId = actor.id;
     const { order, item } = await prisma.$transaction(async (tx) => {
+      // Row lock first: ownership and the item status are checked against the latest data, and two
+      // presses on the same item (or a requeue of the job) run one after the other
+      const locked = await lockOrderRow(tx, repairOrderId);
+      if (!locked) {
+        throw new AppError(404, 'Repair order not found');
+      }
+      if (actor.role === 'RECEPTIONIST') {
+        throw new AppError(403, 'Forbidden: Receptionists cannot complete repair items');
+      }
+      if (actor.role === 'TECHNICIAN' && locked.technicianId !== actor.id) {
+        throw new AppError(403, 'Forbidden: Only the assigned technician or an admin can complete items');
+      }
       const existingOrder = await tx.repairOrder.findUnique({
         where: { id: repairOrderId },
       });
@@ -1107,6 +1121,10 @@ export class RepairService {
    */
   static async setHelpers(id: number, actor: Actor, technicianIds: number[]) {
     await prisma.$transaction(async (tx) => {
+      // Row lock: two edits at the same moment run one after the other (the later one wins, both logged)
+      if (!(await lockOrderRow(tx, id))) {
+        throw new AppError(404, 'Repair order not found');
+      }
       const order = await tx.repairOrder.findUnique({ where: { id } });
       if (!order) {
         throw new AppError(404, 'Repair order not found');
@@ -1470,7 +1488,9 @@ export class RepairService {
    */
   static async setPayment(id: number, actor: Actor, payment: PaymentInput) {
     await prisma.$transaction(async (tx) => {
-      const order = await tx.repairOrder.findUnique({ where: { id }, select: { status: true } });
+      // Row lock: a rework / status change pressed at the same moment waits for this payment, or
+      // this payment sees the new status and is refused
+      const order = await lockOrderRow(tx, id);
       if (!order) {
         throw new AppError(404, 'Repair order not found');
       }

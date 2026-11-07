@@ -121,47 +121,58 @@ async function run() {
     await waitForHealth();
     console.log('>>> [Test Runner] API Server is READY!\n');
 
-    console.log('>>> [Test Runner] 1/14 Running Timezone Rollover Tests...');
+    console.log('>>> [Test Runner] 1/17 Running Timezone Rollover Tests...');
     execSync(`${pnpmCmd} test:timezone`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 2/14 Running Business Hours Unit Tests...');
+    console.log('\n>>> [Test Runner] 2/17 Running Business Hours Unit Tests...');
     execSync(`${pnpmCmd} test:business-hours`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 3/14 Running Config Validation Unit Tests...');
+    console.log('\n>>> [Test Runner] 3/17 Running Config Validation Unit Tests...');
     execSync(`${pnpmCmd} test:config`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 4/14 Running Safe 3-Step Migration Test (>= 5 Rows Legacy Data)...');
+    console.log('\n>>> [Test Runner] 4/17 Running Swagger Coverage Test...');
+    execSync(`${pnpmCmd} test:swagger`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 5/17 Running Safe 3-Step Migration Test (>= 5 Rows Legacy Data)...');
     execSync(`${pnpmCmd} test:migration`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 5/14 Running Comprehensive Smoke Tests (Positive & Negative)...');
+    console.log('\n>>> [Test Runner] 6/17 Running Comprehensive Smoke Tests (Positive & Negative)...');
     execSync(`${pnpmCmd} test:smoke`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 6/14 Running High-Concurrency & Contention Tests (20 Rounds & Race Tests)...');
+    console.log('\n>>> [Test Runner] 7/17 Running High-Concurrency & Contention Tests (20 Rounds & Race Tests)...');
     execSync(`${pnpmCmd} test:concurrency`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 7/14 Running Phase 2 Intake / RepairItem v2 / Visibility Tests...');
+    console.log('\n>>> [Test Runner] 8/17 Running Phase 2 Intake / RepairItem v2 / Visibility Tests...');
     execSync(`${pnpmCmd} test:intake`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 8/14 Running Phase 3 Notifier / Notifications Tests...');
+    console.log('\n>>> [Test Runner] 9/17 Running Phase 3 Notifier / Notifications Tests...');
     execSync(`${pnpmCmd} test:notifications`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 9/14 Running Phase 4 Technician Queue Tests...');
+    console.log('\n>>> [Test Runner] 10/17 Running Phase 4 Technician Queue Tests...');
     execSync(`${pnpmCmd} test:queue`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 10/14 Running Phase 5 Pricing / Complete / Still-Working Tests...');
+    console.log('\n>>> [Test Runner] 11/17 Running Phase 5 Pricing / Complete / Still-Working Tests...');
     execSync(`${pnpmCmd} test:pricing`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 11/14 Running Phase 5b Job Numbers / Holidays / Day Off / Not Repaired / Payment Tests...');
+    console.log('\n>>> [Test Runner] 12/17 Running Phase 5b Job Numbers / Holidays / Day Off / Not Repaired / Payment Tests...');
     execSync(`${pnpmCmd} test:shop-rules`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 12/14 Running Phase 6 Public Search / PDPA / LINE Link Tests...');
-    execSync(`${pnpmCmd} test:privacy`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 13/14 Running Phase 7 Image Upload / Download / Purge Tests...');
+    console.log('\n>>> [Test Runner] 13/17 Running Phase 7 Image Upload / Download / Purge Tests...');
     execSync(`${pnpmCmd} test:images`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
-    console.log('\n>>> [Test Runner] 14/14 Running Phase 8 Background Job Tests...');
+    console.log('\n>>> [Test Runner] 14/17 Running Phase 8 Background Job Tests...');
     execSync(`${pnpmCmd} test:jobs`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 15/17 Running Phase 9 Simultaneous-Press (Race) Tests...');
+    execSync(`${pnpmCmd} test:races`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    console.log('\n>>> [Test Runner] 16/17 Running Phase 9 End-to-End Test (paper form 112 / 5595)...');
+    execSync(`${pnpmCmd} test:e2e`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
+
+    // Last: its rate-limit test exhausts the public search budget of this IP for 15 minutes
+    console.log('\n>>> [Test Runner] 17/17 Running Phase 6 Public Search / PDPA / LINE Link Tests...');
+    execSync(`${pnpmCmd} test:privacy`, { cwd: apiDir, stdio: 'inherit', env: testEnv });
 
     console.log('\n=============================================================');
     console.log('>>> [Test Runner] ALL TEST SUITES PASSED WITH 100% SUCCESS! <<<');
