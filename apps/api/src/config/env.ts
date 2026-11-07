@@ -39,6 +39,11 @@ export interface AppConfig {
   jobWorkerIntervalSeconds: number;
   jobsEnabled: boolean;
   customerLineApprovalEnabled: boolean;
+  /**
+   * Order total (THB, all item types, REJECTED excluded) from which the customer must confirm prices by phone.
+   * Items added while the total stays below it are approved automatically. 0 = every item needs confirmation.
+   */
+  priceApprovalThreshold: number;
   publicSearchRateLimitMax: number;
   imageStorageDir: string;
   imageMaxBytes: number;
@@ -135,6 +140,7 @@ export function loadAppConfig(env: Env = process.env): AppConfig {
     jobWorkerIntervalSeconds: r.int('JOB_WORKER_INTERVAL_SECONDS', 60, 5, 86400),
     jobsEnabled: r.bool('JOBS_ENABLED', true),
     customerLineApprovalEnabled: r.bool('CUSTOMER_LINE_APPROVAL_ENABLED', false),
+    priceApprovalThreshold: r.int('PRICE_APPROVAL_THRESHOLD', 0, 0, 99999999),
     publicSearchRateLimitMax: r.int('PUBLIC_SEARCH_RATE_LIMIT_MAX', 30, 1, 10000),
     imageStorageDir: r.text('IMAGE_STORAGE_DIR', './data/uploads'),
     imageMaxBytes: r.int('IMAGE_MAX_BYTES', 5242880, 1024, 52428800),
