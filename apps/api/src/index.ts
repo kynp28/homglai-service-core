@@ -62,8 +62,10 @@ app.use('/api/webhook/line', express.raw({ type: '*/*' }));
 
 app.use(express.json());
 
-// Swagger API Documentation (Disabled in production mode)
-if (process.env.NODE_ENV !== 'production') {
+// Swagger API documentation: on outside production; in production only with SWAGGER_ENABLED=true
+// (e.g. a demo server). It lists every endpoint, so leave it off on the real shop server.
+const swaggerEnabled = process.env.NODE_ENV !== 'production' || process.env.SWAGGER_ENABLED === 'true';
+if (swaggerEnabled) {
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 }
 
@@ -104,7 +106,7 @@ app.use(errorHandler);
 
 const server = app.listen(port, () => {
   console.log(`[server]: API Server is running at http://localhost:${port}`);
-  console.log(`[server]: Swagger Docs available at http://localhost:${port}/api-docs`);
+  if (swaggerEnabled) console.log(`[server]: Swagger Docs available at /api-docs`);
 });
 
 // Background jobs (Phase 8) start after the server listens

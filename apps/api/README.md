@@ -35,7 +35,7 @@ mysqldump -u <user> -p -h <host> --single-transaction --quick --routines --trigg
 ### Step 2: Configure Production Environment Variables
 Create and configure `apps/api/.env` based on `apps/api/.env.example`. Ensure:
 - `JWT_SECRET` is a cryptographically strong string of at least 32 characters.
-- `NODE_ENV` is set to `production` (this automatically turns off Swagger UI `/api-docs`).
+- `NODE_ENV` is set to `production` (this automatically turns off Swagger UI `/api-docs` unless `SWAGGER_ENABLED=true`, meant for a demo server only).
 - `TRUST_PROXY` is configured according to your proxy topology (see below).
 - `ALLOW_DESTRUCTIVE_TESTS` is left unset or explicitly set to `false`.
 

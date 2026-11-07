@@ -8,12 +8,8 @@ const options: swaggerJsdoc.Options = {
       version: '1.0.0',
       description: 'API documentation for the Coffee Machine Repair Tracking System',
     },
-    servers: [
-      {
-        url: 'http://localhost:4000',
-        description: 'Development Server',
-      },
-    ],
+    // Relative: "Try it out" calls the same host the docs were opened from (local or Railway)
+    servers: [{ url: '/', description: 'This server' }],
     components: {
       securitySchemes: {
         bearerAuth: {

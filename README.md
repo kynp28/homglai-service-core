@@ -146,7 +146,7 @@ SEED_DEMO_PASSWORD="<รหัสอย่างน้อย 12 ตัว>" pnpm
 
 เมื่อ Server เริ่มทำงานสำเร็จ:
 * ตรวจสอบสถานะการเชื่อมต่อ: `GET http://localhost:4000/api/health` (ต้องตอบกลับ `{ "status": "ok", "database": "connected" }`)
-* ดูเอกสาร API ผ่าน Swagger UI: `http://localhost:4000/api-docs` *(ปิดอัตโนมัติเมื่อ `NODE_ENV=production`)*
+* ดูเอกสาร API ผ่าน Swagger UI: `http://localhost:4000/api-docs` *(ปิดอัตโนมัติเมื่อ `NODE_ENV=production` เว้นแต่ตั้ง `SWAGGER_ENABLED=true` เช่นบนเซิร์ฟเวอร์เดโม)*
 
 ---
 
@@ -372,7 +372,7 @@ pnpm --filter @homglai/api test:all
    * ต้องสุ่มค่า `JWT_SECRET` ใหม่ที่มีความยาวอย่างน้อย 32 ตัวอักษรที่มีเอนโทรปีสูง
    * กำหนดรหัสผ่าน `MYSQL_ROOT_PASSWORD` ใหม่ที่รัดกุม
    * ตั้งค่า `LINE_CHANNEL_SECRET` และ `LINE_CHANNEL_ACCESS_TOKEN` จาก LINE Official Account จริง
-   * ตั้งค่า `NODE_ENV=production` เพื่อปิดการเข้าถึง Swagger UI (`/api-docs`) โดยอัตโนมัติ
+   * ตั้งค่า `NODE_ENV=production` เพื่อปิดการเข้าถึง Swagger UI (`/api-docs`) โดยอัตโนมัติ และอย่าตั้ง `SWAGGER_ENABLED=true` บนเซิร์ฟเวอร์ที่ใช้งานจริง
 4. **การสำรองข้อมูลและทดสอบการกู้คืน (Backup & Tested Restore):**
    * ก่อนการ Deploy Migration ทุกครั้ง ต้องสั่งทำ Database Snapshot / Dump เสมอ:
      ```bash
