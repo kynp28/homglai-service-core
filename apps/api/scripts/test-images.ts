@@ -232,7 +232,10 @@ async function main() {
     assert(!everything.includes('storagePath'), 'no "storagePath" key anywhere');
     for (const p of paths) assert(!everything.includes(p), `stored path ${p} never returned`);
     assert(!/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg/.test(everything), 'no <uuid>.jpg in responses');
-    const pub = await fetch(`${API}/tracking/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: O.jobNumber }) });
+    // Test job numbers (REP-P7-xxxx) are not in the public format, so search by a paper receipt number
+    await prisma.repairOrder.update({ where: { id: O.id }, data: { paperReceiptNo: '99770001' } });
+    const pub = await fetch(`${API}/tracking/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '99770001' }) });
+    eq(pub.status, 200, 'public search finds the order (runs before the privacy suite uses up the rate limit)');
     assert(!(await pub.text()).toLowerCase().includes('image'), 'public search has no images');
     pass(`${allTexts.length} responses checked`);
 

@@ -14,6 +14,11 @@
 | `PUBLIC_TRACKING_BASE_URL` | Public base URL used when sending tracking links to customers (if unset, tracking link is omitted) | `https://example.com/tracking/` |
 | `MYSQL_ROOT_PASSWORD` | MySQL root password for database service (mandatory in docker-compose) | Required |
 | `ALLOW_DESTRUCTIVE_TESTS` | Safety flag to permit destructive test scripts. Must NEVER be true on production | `false` |
+| `LINE_LOGIN_CHANNEL_ID` | LINE Login channel of the customer LIFF; access tokens are verified against it (`LINE_IDENTITY_VERIFIER=mock` is accepted only with `NODE_ENV=test`) | Required for `POST /api/tracking/subscribe-line` |
+| `JOBS_ENABLED` / `JOB_WORKER_INTERVAL_SECONDS` | Built-in background jobs (unaccepted-job digest, progress reminders, requeue safety net, nightly photo purge) | `true` / `60` |
+| `IMAGE_STORAGE_DIR` | Folder for repair photos; mount it as a persistent volume outside the container | `./data/uploads` |
+
+Reminder, business-hours, image and rate-limit settings (all optional, validated at startup) are listed with their defaults in `apps/api/.env.example` and in section 6 of the root `README.md`.
 
 ---
 

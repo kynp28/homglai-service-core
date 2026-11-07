@@ -116,7 +116,7 @@ export class RepairController {
         throw new AppError(403, 'Forbidden: Only the assigned technician or an admin can complete items');
       }
 
-      const result = await RepairService.completeRepairItem(repairOrderId, itemId, userId);
+      const result = await RepairService.completeRepairItem(repairOrderId, itemId, { id: userId, role: req.user!.role });
       res.status(200).json({ status: 'success', data: sanitizeForRole(result, req.user!.role) });
     } catch (error) {
       next(error);

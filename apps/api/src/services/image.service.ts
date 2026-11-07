@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { lockOrderRow } from '../utils/order-lock';
 import sharp from 'sharp';
 import prisma, { ImageKind } from '@homglai/db';
 import { AppError } from '../utils/app-error';
@@ -123,8 +124,9 @@ export class ImageService {
       }
       const now = new Date();
       await prisma.$transaction(async (tx) => {
-        // Re-checked inside the transaction (status / limit may have changed meanwhile)
-        const fresh = await tx.repairOrder.findUniqueOrThrow({ where: { id: repairOrderId }, select: { status: true } });
+        // Re-checked under a row lock: concurrent uploads to the same order are counted one at a time
+        const fresh = await lockOrderRow(tx, repairOrderId);
+        if (!fresh) throw new AppError(404, 'Repair order not found');
         if (CLOSED.includes(fresh.status)) throw new AppError(409, `Cannot add images to a ${fresh.status} repair order`);
         const count = await tx.repairOrderImage.count({ where: { repairOrderId, kind } });
         if (count + written.length > config.imageMaxPerKind) {

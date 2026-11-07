@@ -1,3 +1,8 @@
+# Development / test databases only. The API server is not containerised here.
+# When you add an API service, give the photo folder (IMAGE_STORAGE_DIR) its own named volume,
+# e.g.  volumes: - repair_photos:/app/apps/api/data/uploads
+# so photos survive container rebuilds, and keep its backups no longer than IMAGE_RETENTION_DAYS
+# after an order closes (PDPA).
 services:
   mysql:
     image: mysql:8.0
