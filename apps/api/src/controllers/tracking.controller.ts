@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '@homglai/db';
 import { SseService } from '../services/sse.service';
 import { bindLineToOrder, findOrderByTrackingQuery } from '../services/line-subscription.service';
+import { LineWebhookService } from '../services/line-webhook.service';
 import { getLineIdentityVerifier } from '../services/line-identity';
 import { statusLabelTh, toPublicTrackingView } from '../utils/customer-view';
 
@@ -62,6 +63,15 @@ export class TrackingController {
       where: { id: result.order.id },
       select: { jobNumber: true, status: true, repairOutcome: true },
     });
+    // Confirmation in the customer's chat on a new link (status only — no personal data, SRS 5)
+    if (!result.alreadySubscribed) {
+      LineWebhookService.sendPush(lineUserId!, [
+        {
+          type: 'text',
+          text: `รับแจ้งเตือนใบงาน ${order.jobNumber} เรียบร้อยแล้ว ✅\nสถานะตอนนี้: ${statusLabelTh(order.status, order.repairOutcome)}\nร้านจะแจ้งทาง LINE นี้ทุกครั้งที่สถานะเปลี่ยน`,
+        },
+      ]).catch(() => {});
+    }
     res.status(200).json({
       status: 'success',
       data: {

@@ -40,13 +40,22 @@ export const LineStaffService = {
     if (owner && owner.id !== employeeId) {
       throw new AppError(409, 'บัญชี LINE นี้ผูกกับพนักงานคนอื่นแล้ว');
     }
+    let name = '';
     try {
-      await prisma.employee.update({ where: { id: employeeId }, data: { lineUserId } });
+      const updated = await prisma.employee.update({ where: { id: employeeId }, data: { lineUserId }, select: { name: true } });
+      name = updated.name;
     } catch (err: any) {
       if (err?.code === 'P2002') throw new AppError(409, 'บัญชี LINE นี้ผูกกับพนักงานคนอื่นแล้ว');
       throw err;
     }
-    return { lineLinked: true };
+    // Confirmation in the chat (also proves the push reaches this account); never fails the link
+    const pushed = await LineStaffApi.push(lineUserId, [
+      {
+        type: 'text',
+        text: `ผูก LINE กับบัญชีพนักงาน "${name}" เรียบร้อยแล้ว ✅\nต่อจากนี้งานซ่อมใหม่และการแจ้งเตือนจะส่งมาที่แชตนี้`,
+      },
+    ]);
+    return { lineLinked: true, confirmationSent: pushed };
   },
 
   /**
