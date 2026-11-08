@@ -3,7 +3,7 @@ import { getAppConfig } from '../config/env';
 import { AppError } from '../utils/app-error';
 import { LineApiIdentityVerifier, LineIdentityVerifier, MockLineIdentityVerifier } from './line-identity';
 import { RepairService } from './repair.service';
-import { ACCEPT_JOB_ACTION, LineStaffApi } from './line-staff-api';
+import { ACCEPT_JOB_ACTION, LineStaffApi, STILL_WORKING_ACTION } from './line-staff-api';
 import { notifySafely } from '../notifications';
 
 /**
@@ -109,10 +109,33 @@ async function handleEvent(event: any): Promise<void> {
 
   if (event.type !== 'postback') return;
   const postback = parsePostback(event.postback?.data);
-  if (!postback || postback.action !== ACCEPT_JOB_ACTION) return;
+  if (!postback || (postback.action !== ACCEPT_JOB_ACTION && postback.action !== STILL_WORKING_ACTION)) return;
 
   if (!employee || (employee.role !== 'TECHNICIAN' && employee.role !== 'ADMIN')) {
     await LineStaffApi.reply(replyToken, NOT_LINKED_REPLY);
+    return;
+  }
+
+  if (postback.action === STILL_WORKING_ACTION) {
+    try {
+      const order: any = await RepairService.stillWorking(postback.orderId, { id: employee.id, role: employee.role });
+      await LineStaffApi.reply(
+        replyToken,
+        `รับทราบ ใบงาน ${order?.jobNumber ?? ''} ยังซ่อมอยู่ ระบบจะเริ่มนับเวลาเตือนใหม่`
+      );
+    } catch (err: any) {
+      const status = err instanceof AppError ? err.statusCode : 500;
+      const text =
+        status === 403
+          ? 'ใบงานนี้ไม่ได้อยู่กับคุณแล้ว'
+          : status === 404
+            ? 'ไม่พบใบงานนี้'
+            : status === 409
+              ? 'ใบงานนี้ไม่ได้อยู่ระหว่างซ่อมแล้ว (อาจส่งงานหรือถูกยกเลิกไปแล้ว)'
+              : 'บันทึกไม่สำเร็จ กรุณาลองใหม่ หรือกด "ยังซ่อมอยู่" ในหน้าเว็บ';
+      if (status >= 500) console.error('[LINE Tech Webhook] still-working failed:', err?.message || err);
+      await LineStaffApi.reply(replyToken, text);
+    }
     return;
   }
 

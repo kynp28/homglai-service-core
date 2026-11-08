@@ -6,6 +6,7 @@ import { NotificationEvent, Notifier, NotifyResult } from './types';
 function directRecipient(event: NotificationEvent): number | null {
   switch (event.type) {
     case 'JOB_RESERVED':
+    case 'JOB_ACK_REMINDER':
     case 'PROGRESS_CHECK':
       return event.technicianId;
     default:
@@ -17,6 +18,7 @@ function directRecipient(event: NotificationEvent): number | null {
 function orderIds(event: NotificationEvent): number[] {
   switch (event.type) {
     case 'JOB_RESERVED':
+    case 'JOB_ACK_REMINDER':
       return [event.repairOrderId];
     case 'LINE_UNLINKED':
       return [];
@@ -26,7 +28,7 @@ function orderIds(event: NotificationEvent): number[] {
 }
 
 function isEmpty(event: NotificationEvent): boolean {
-  if (event.type === 'JOB_RESERVED' || event.type === 'LINE_UNLINKED') return false;
+  if (event.type === 'JOB_RESERVED' || event.type === 'JOB_ACK_REMINDER' || event.type === 'LINE_UNLINKED') return false;
   return event.orders.length === 0;
 }
 

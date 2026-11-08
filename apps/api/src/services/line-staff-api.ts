@@ -34,3 +34,5 @@ export const LineStaffApi = {
 };
 
 export const ACCEPT_JOB_ACTION = 'accept_job';
+
+export const STILL_WORKING_ACTION = 'still_working';
