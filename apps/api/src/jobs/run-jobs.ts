@@ -120,6 +120,56 @@ export async function remindUnacceptedJobs(now: Date): Promise<number> {
   return digest.length;
 }
 
+/**
+ * Job 2b — repeat "please accept this job" to the technician every TECH_ACK_REMINDER_INTERVAL_MINUTES
+ * while a reserved job is not accepted (owner decision 2026-11-08). Business hours only, so nobody is
+ * woken at night. The last reminder time is read from the technician's notification inbox (the first
+ * JOB_RESERVED counts), so no schema change is needed. 0 = off (default).
+ */
+export async function remindTechniciansToAccept(now: Date): Promise<number> {
+  const interval = getAppConfig().techAckReminderIntervalMinutes;
+  if (interval <= 0 || !isWithinBusinessHours(now)) return 0;
+  const dueBefore = new Date(now.getTime() - interval * MINUTE);
+
+  const reserved = await prisma.repairOrder.findMany({
+    where: {
+      status: 'NEW',
+      technicianId: { not: null },
+      acknowledgedAt: null,
+      assignedAt: { not: null, lte: dueBefore },
+      technician: { isActive: true },
+    },
+    select: { id: true, jobNumber: true, technicianId: true, assignedAt: true, machine: { select: { brand: true, model: true } } },
+    orderBy: [{ assignedAt: 'asc' }, { id: 'asc' }],
+  });
+
+  let sent = 0;
+  for (const order of reserved) {
+    const last = await prisma.notification.findFirst({
+      where: {
+        recipientId: order.technicianId!,
+        repairOrderId: order.id,
+        type: { in: ['JOB_RESERVED', 'JOB_ACK_REMINDER'] },
+        createdAt: { gte: order.assignedAt! },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    const lastAt = last?.createdAt ?? order.assignedAt!;
+    if (lastAt > dueBefore) continue;
+    await notifySafely({
+      type: 'JOB_ACK_REMINDER',
+      technicianId: order.technicianId!,
+      repairOrderId: order.id,
+      jobNumber: order.jobNumber,
+      machine: { brand: order.machine?.brand ?? '', model: order.machine?.model ?? '' },
+      waitingMinutes: Math.max(0, Math.floor((now.getTime() - order.assignedAt!.getTime()) / MINUTE)),
+    });
+    sent++;
+  }
+  return sent;
+}
+
 const BANGKOK_OFFSET_MS = 7 * 60 * MINUTE;
 
 /**
@@ -260,6 +310,9 @@ export async function runJobsOnce(now: Date = new Date()): Promise<JobRunReport>
   });
   await step('remindUnacceptedJobs', async () => {
     report.ackReminded = await remindUnacceptedJobs(now);
+  });
+  await step('remindTechniciansToAccept', async () => {
+    await remindTechniciansToAccept(now);
   });
   await step('processQueue', async () => {
     report.queueAssigned = await AssignmentService.processQueue();

@@ -72,7 +72,18 @@ export interface LineUnlinkedEvent {
   reason: string;
 }
 
+/** A reserved job is still not accepted: repeated reminder to that technician (TECH_ACK_REMINDER_INTERVAL_MINUTES). */
+export interface JobAckReminderEvent {
+  type: 'JOB_ACK_REMINDER';
+  technicianId: number;
+  repairOrderId: number;
+  jobNumber: string;
+  machine: MachineLabel;
+  waitingMinutes: number;
+}
+
 export type NotificationEvent =
+  | JobAckReminderEvent
   | LineUnlinkedEvent
   | JobReservedEvent
   | AckOverdueDigestEvent

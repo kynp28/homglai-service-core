@@ -70,6 +70,11 @@ export function renderNotification(event: NotificationEvent): RenderedNotificati
           ...event.orders.map((o) => `- ใบงาน ${o.jobNumber}: ขั้นเดิม ${STAGE_LABELS[o.previousStatus]}`),
         ].join('\n'),
       };
+    case 'JOB_ACK_REMINDER':
+      return {
+        title: 'เตือน: มีงานรอคุณกดรับ',
+        body: `ใบงาน ${event.jobNumber} (เครื่อง ${machineText(event.machine)}) จ่ายให้คุณมาแล้ว ${event.waitingMinutes} นาที ยังไม่ได้กดรับงาน กรุณากดรับงาน`,
+      };
     case 'LINE_UNLINKED':
       return {
         title: `${event.employeeName} ยกเลิกการผูก LINE`,
