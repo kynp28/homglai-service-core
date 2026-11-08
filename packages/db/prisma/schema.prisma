@@ -38,6 +38,7 @@ model Employee {
   helpersAdded   RepairOrderHelper[] @relation("HelperAddedBy")
   holidaysCreated ShopHoliday[]     @relation("HolidayCreatedBy")
   paymentsRecorded RepairOrder[]    @relation("PaymentRecordedBy")
+  partStockLogs  PartStockLog[]
 }
 
 model Customer {
@@ -382,4 +383,45 @@ enum PaymentMethod {
   CASH
   TRANSFER
   OTHER
+}
+
+// ==============================
+// Parts catalog & stock (added 2026-11-08, outside SRS v2.2 — see docs/parts-stock-scope.md)
+// ==============================
+
+/** One spare part. `code` is what the barcode holds: the shop's existing label code, or a generated HG00001. */
+model Part {
+  id            Int            @id @default(autoincrement())
+  code          String         @unique @db.VarChar(64)
+  name          String         @db.VarChar(191)
+  category      String?        @db.VarChar(100)
+  /** Machine models the part fits (free text, e.g. "ZSP40, ZSP40-T") */
+  machineModels String?        @db.VarChar(500)
+  unit          String         @default("ชิ้น") @db.VarChar(20)
+  /** Selling price in THB; null = not priced yet */
+  sellPrice     Decimal?       @db.Decimal(10, 2)
+  costPrice     Decimal?       @db.Decimal(10, 2)
+  stockQty      Int            @default(0)
+  isActive      Boolean        @default(true)
+  note          String?        @db.VarChar(500)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  stockLogs     PartStockLog[]
+}
+
+/** Every stock change, with who and why (SCAN_IN = barcode scan +n, ADJUST = +/- by hand, COUNT = set to a counted value). */
+model PartStockLog {
+  id         Int      @id @default(autoincrement())
+  partId     Int
+  part       Part     @relation(fields: [partId], references: [id])
+  change     Int
+  qtyAfter   Int
+  reason     String   @db.VarChar(30)
+  note       String?  @db.VarChar(500)
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([partId])
+  @@index([employeeId])
 }
