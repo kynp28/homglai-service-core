@@ -15,6 +15,7 @@ import webhookRoutes from './routes/webhook.routes';
 import symptomRoutes from './routes/symptom.routes';
 import notificationRoutes from './routes/notification.routes';
 import holidayRoutes from './routes/holiday.routes';
+import partRoutes from './routes/part.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import { startJobScheduler } from './jobs/scheduler';
 
@@ -97,6 +98,7 @@ app.use('/api/webhook', webhookRoutes);
 app.use('/api/symptoms', symptomRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/holidays', holidayRoutes);
+app.use('/api/parts', partRoutes);
 
 // Catch 404 for any unhandled routes
 app.use(notFoundHandler);
