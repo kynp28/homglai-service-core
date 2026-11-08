@@ -8,8 +8,44 @@ import {
 } from '../validators/employee.validator';
 import { AppError } from '../utils/app-error';
 import { sanitizeForRole } from '../utils/response-sanitizer';
+import { LineStaffService } from '../services/line-staff.service';
+import prisma from '@homglai/db';
 
 export class EmployeeController {
+  /** GET /api/employees/me — the signed-in employee (current status, whether LINE is linked). */
+  static async me(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const employee = await prisma.employee.findUnique({
+        where: { id: req.user!.employeeId },
+        select: { id: true, username: true, name: true, role: true, status: true, weeklyDayOff: true, lineUserId: true },
+      });
+      if (!employee) throw new AppError(404, 'Employee not found');
+      const { lineUserId, ...rest } = employee;
+      res.status(200).json({ status: 'success', data: { ...rest, lineLinked: lineUserId !== null } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /api/employees/me/line — link LINE via a technicians'-LIFF access token. */
+  static async linkLine(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await LineStaffService.linkEmployee(req.user!.employeeId, req.body?.lineAccessToken);
+      res.status(200).json({ status: 'success', data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** DELETE /api/employees/me/line — unlink. */
+  static async unlinkLine(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      res.status(200).json({ status: 'success', data: await LineStaffService.unlinkEmployee(req.user!.employeeId) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async create(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const data = createEmployeeSchema.parse(req.body);
