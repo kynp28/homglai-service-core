@@ -4,13 +4,54 @@ import { z } from 'zod';
 import { AppError } from '../utils/app-error';
 import { RepairService } from './repair.service';
 import { getAppConfig } from '../config/env';
-import { bindLineToOrder, isSubscribed, parseTrackingQuery, subscribersOf } from './line-subscription.service';
+import {
+  bindLineToOrder,
+  findOrderByTrackingQuery,
+  isSubscribed,
+  parseTrackingQuery,
+  subscribersOf,
+} from './line-subscription.service';
+import { statusLabelTh } from '../utils/customer-view';
 
 /** Same reply for every failed link attempt (unknown order, wrong phone) so nothing can be probed. */
 export const LINE_BIND_FAILED_REPLY =
   'ไม่สามารถผูกบัญชีได้ กรุณาตรวจสอบเลขใบงาน (หรือเลขที่ใบรับเครื่อง) และเบอร์โทรศัพท์ที่ให้ไว้กับร้านอีกครั้ง';
 export const LINE_BIND_TOO_MANY_REPLY = 'ท่านลองผูกบัญชีผิดหลายครั้ง กรุณาลองใหม่ภายหลัง หรือติดต่อทางร้าน';
 export type BindReplyOutcome = 'bound' | 'already' | 'failed' | 'too_many';
+
+/**
+ * Chat instructions for customers (owner decision 2026-11-08): sent when they add the OA as a friend or press
+ * the rich-menu button that sends "รับแจ้งเตือนงานซ่อม" / "ติดตามสถานะ" / "เช็คสถานะ".
+ */
+export const CUSTOMER_HELP_REPLY = [
+  'รับแจ้งเตือนสถานะงานซ่อมทาง LINE 🔔',
+  'พิมพ์ เลขใบงาน (หรือเลขที่ใบรับเครื่อง) เว้นวรรค ตามด้วยเบอร์โทรที่ให้ไว้กับร้าน แล้วส่งมาในแชตนี้',
+  '',
+  'ตัวอย่าง',
+  'REP-2611-0001 0812345678',
+  'หรือ',
+  '5595 0812345678',
+  '',
+  'อยากดูสถานะอย่างเดียว พิมพ์แค่เลขใบงาน เช่น REP-2611-0001',
+].join('\n');
+
+/** Text that asks for the instructions (rich-menu buttons send one of these). */
+const CUSTOMER_HELP_RE = /^(รับแจ้งเตือน|แจ้งเตือน|ติดตาม|เช็คสถานะ|เช็กสถานะ|ตรวจสอบสถานะ|สถานะงาน|วิธีใช้|help)/i;
+
+export const STATUS_NOT_FOUND_REPLY = 'ไม่พบใบงานนี้ กรุณาตรวจสอบเลขใบงานหรือเลขที่ใบรับเครื่องอีกครั้ง';
+
+/** Status-only lookups in chat: same data as the public /track page, limited per LINE account. */
+const STATUS_LOOKUP_MAX = 30;
+const statusLookups = new Map<string, number[]>();
+function statusLookupAllowed(lineUserId: string, now = Date.now()): boolean {
+  const recent = (statusLookups.get(lineUserId) ?? []).filter((t) => now - t < BIND_WINDOW_MS);
+  if (recent.length >= STATUS_LOOKUP_MAX) {
+    statusLookups.set(lineUserId, recent);
+    return false;
+  }
+  statusLookups.set(lineUserId, [...recent, now]);
+  return true;
+}
 
 const BIND_MAX_FAILURES = 5;
 const BIND_WINDOW_MS = 15 * 60 * 1000;
@@ -231,16 +272,49 @@ export class LineWebhookService {
       return 'failed';
     }
     bindFailures.reset(lineUserId);
+    const current = await prisma.repairOrder.findUnique({
+      where: { id: result.order.id },
+      select: { status: true, repairOutcome: true },
+    });
+    const statusLine = current ? `\nสถานะตอนนี้: ${statusLabelTh(current.status, current.repairOutcome)}` : '';
     const base = process.env.PUBLIC_TRACKING_BASE_URL?.trim();
     // Private channel after phone verification: the tracking link may be sent here
     const link = base ? `\n\nติดตามสถานะได้ที่:\n${base.replace(/\/+$/, '')}/${result.order.trackingToken}` : '';
     await this.sendReply(
       replyToken,
       result.alreadySubscribed
-        ? `บัญชี LINE ของท่านผูกกับใบงาน ${result.order.jobNumber} อยู่แล้ว${link}`
-        : `ผูกบัญชี LINE กับใบงาน ${result.order.jobNumber} เรียบร้อยแล้ว ท่านจะได้รับแจ้งทุกครั้งที่สถานะเปลี่ยน${link}`
+        ? `บัญชี LINE ของท่านผูกกับใบงาน ${result.order.jobNumber} อยู่แล้ว${statusLine}${link}`
+        : `ผูกบัญชี LINE กับใบงาน ${result.order.jobNumber} เรียบร้อยแล้ว ✅${statusLine}\nท่านจะได้รับแจ้งทุกครั้งที่สถานะเปลี่ยน${link}`
     );
     return result.alreadySubscribed ? 'already' : 'bound';
+  }
+
+  /** Status only (no personal data — same as the public /track page). */
+  static async handleStatusMessage(lineUserId: string, replyToken: string, query: string): Promise<void> {
+    if (!statusLookupAllowed(lineUserId)) {
+      await this.sendReply(replyToken, 'ค้นหาบ่อยเกินไป กรุณาลองใหม่ภายหลัง');
+      return;
+    }
+    const found = await findOrderByTrackingQuery(query);
+    if (!found) {
+      await this.sendReply(replyToken, STATUS_NOT_FOUND_REPLY);
+      return;
+    }
+    const order = await prisma.repairOrder.findUniqueOrThrow({
+      where: { id: found.id },
+      select: { jobNumber: true, status: true, repairOutcome: true, updatedAt: true, machine: { select: { brand: true, model: true } } },
+    });
+    const updated = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok' }).format(order.updatedAt);
+    const subscribed = await isSubscribed(found.id, lineUserId);
+    await this.sendReply(
+      replyToken,
+      [
+        `ใบงาน ${order.jobNumber} (${order.machine.brand} ${order.machine.model})`,
+        `สถานะ: ${statusLabelTh(order.status, order.repairOutcome)}`,
+        `อัปเดตล่าสุด: ${updated}`,
+        ...(subscribed ? [] : ['', `รับแจ้งเตือนอัตโนมัติ: พิมพ์ ${order.jobNumber} ตามด้วยเบอร์โทรที่ให้ไว้กับร้าน`]),
+      ].join('\n')
+    );
   }
 
   static async processEvents(events: any[]): Promise<void> {
@@ -250,11 +324,24 @@ export class LineWebhookService {
         const replyToken = event.replyToken;
         if (!lineUserId) continue;
 
-        // 1. Text message "<REP-... or paper receipt no.> <phone>": link this LINE account to that order
+        // 0. New friend: how to subscribe
+        if (event.type === 'follow') {
+          await this.sendReply(replyToken ?? '', CUSTOMER_HELP_REPLY);
+          continue;
+        }
+
         if (event.type === 'message' && event.message?.type === 'text') {
-          const tokens = String(event.message.text || '').trim().split(/\s+/);
+          const text = String(event.message.text || '').trim();
+          const tokens = text.split(/\s+/);
           if (tokens.length >= 2 && parseTrackingQuery(tokens[0]) !== null) {
+            // 1. "<REP-... or paper receipt no.> <phone>": link this LINE account to that order
             await this.handleBindingMessage(lineUserId, replyToken ?? '', tokens[0], tokens.slice(1).join(''));
+          } else if (tokens.length === 1 && parseTrackingQuery(tokens[0]) !== null) {
+            // 1b. Number only: status reply
+            await this.handleStatusMessage(lineUserId, replyToken ?? '', tokens[0]);
+          } else if (CUSTOMER_HELP_RE.test(text)) {
+            // 1c. Rich-menu keyword: instructions with an example. Other chat is left to the shop's staff.
+            await this.sendReply(replyToken ?? '', CUSTOMER_HELP_REPLY);
           }
         }
 
