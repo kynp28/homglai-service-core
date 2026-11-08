@@ -8,6 +8,7 @@ import { computeAllowedActions } from '../utils/allowed-actions';
 import { statusLabelTh } from '../utils/customer-view';
 import jwt from 'jsonwebtoken';
 import { notifySafely } from '../notifications';
+import { runAsLineAction } from './technician-line-updates';
 
 /**
  * LINE for technicians (separate Messaging API channel from the customers' OA):
@@ -194,7 +195,7 @@ function actionErrorText(err: any, fallback: string): string {
   if (status >= 500) console.error('[LINE Tech Webhook] action failed:', err?.message || err);
   if (status === 403) return 'ทำรายการไม่ได้: ใบงานนี้ไม่ได้อยู่กับคุณ';
   if (status === 404) return 'ไม่พบใบงานนี้';
-  if (status === 409) return 'ทำรายการไม่ได้: สถานะใบงานเปลี่ยนไปแล้ว — กด "เปิดใบงาน" เพื่อดูสถานะล่าสุด';
+  if (status === 409) return 'ทำรายการไม่ได้: ใบงานนี้เปลี่ยนสถานะไปแล้ว (ปุ่มนี้มาจากการ์ดเก่า)';
   return fallback;
 }
 
@@ -227,24 +228,46 @@ async function handleEvent(event: any): Promise<void> {
   }
   const actor = { id: employee.id, role: employee.role };
 
-  let text: string;
+  let jobNumber = '';
   try {
-    if (postback.action === ACCEPT_JOB_ACTION) {
-      const order: any = await RepairService.acceptOrder(postback.orderId, actor);
-      text = `รับงาน ${order?.jobNumber ?? ''} เรียบร้อยแล้ว สถานะ: กำลังตรวจเช็ค`;
-    } else if (postback.action === STILL_WORKING_ACTION) {
-      const order: any = await RepairService.stillWorking(postback.orderId, actor);
-      text = `รับทราบ ใบงาน ${order?.jobNumber ?? ''} ยังซ่อมอยู่ ระบบจะเริ่มนับเวลาเตือนใหม่`;
-    } else {
-      const order: any = await RepairService.updateStatus(postback.orderId, 'REPAIRING', actor);
-      text = `เริ่มซ่อม ${order?.jobNumber ?? ''} แล้ว สถานะ: กำลังซ่อม`;
-    }
+    await runAsLineAction(postback.orderId, async () => {
+      if (postback.action === ACCEPT_JOB_ACTION) {
+        const order: any = await RepairService.acceptOrder(postback.orderId, actor);
+        jobNumber = order?.jobNumber ?? '';
+      } else if (postback.action === STILL_WORKING_ACTION) {
+        const order: any = await RepairService.stillWorking(postback.orderId, actor);
+        jobNumber = order?.jobNumber ?? '';
+      } else {
+        const order: any = await RepairService.updateStatus(postback.orderId, 'REPAIRING', actor);
+        jobNumber = order?.jobNumber ?? '';
+      }
+    });
   } catch (err: any) {
-    await LineStaffApi.reply(replyToken, actionErrorText(err, 'ทำรายการไม่สำเร็จ กรุณาลองใหม่ หรือกด "เปิดใบงาน"'));
+    // Usually a tap on an old card: answer with where the job is NOW and, if any, the current buttons
+    const errorText = actionErrorText(err, 'ทำรายการไม่สำเร็จ กรุณาลองใหม่ หรือกด "เปิดใบงาน"');
+    const current = await currentStatusText(postback.orderId);
+    const card = await buildJobCard(postback.orderId, actor).catch(() => null);
+    const text = current ? `${errorText}\n${current}` : errorText;
+    await LineStaffApi.replyMessages(replyToken, card ? [{ type: 'text', text }, card] : [{ type: 'text', text }]);
     return;
   }
 
-  // Reply with the result + the job card for the next step
+  // Reply with the result (real status, which may skip ahead, e.g. accept -> กำลังซ่อม) + the next-step card
+  const current = (await currentStatusText(postback.orderId)) ?? '';
+  const done =
+    postback.action === ACCEPT_JOB_ACTION
+      ? `รับงาน ${jobNumber} เรียบร้อยแล้ว`
+      : postback.action === STILL_WORKING_ACTION
+        ? `รับทราบ ใบงาน ${jobNumber} ยังซ่อมอยู่ ระบบจะเริ่มนับเวลาเตือนใหม่`
+        : `เริ่มซ่อม ${jobNumber} แล้ว`;
+  const text = current ? `${done}\n${current}` : done;
   const card = await buildJobCard(postback.orderId, actor).catch(() => null);
   await LineStaffApi.replyMessages(replyToken, card ? [{ type: 'text', text }, card] : [{ type: 'text', text }]);
+}
+
+async function currentStatusText(orderId: number): Promise<string | null> {
+  const order = await prisma.repairOrder
+    .findUnique({ where: { id: orderId }, select: { jobNumber: true, status: true, repairOutcome: true } })
+    .catch(() => null);
+  return order ? `สถานะตอนนี้: ${statusLabelTh(order.status, order.repairOutcome)}` : null;
 }
