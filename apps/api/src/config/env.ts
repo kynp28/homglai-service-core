@@ -56,6 +56,8 @@ export interface AppConfig {
   lineIdentityVerifier: 'line' | 'mock';
   /** LINE Login channel ID of the technicians' LIFF (link a LINE account to an employee) */
   lineTechLoginChannelId: string;
+  /** LIFF ID of the technicians' LIFF app (deep links "https://liff.line.me/<id>/jobs/<orderId>" in LINE messages); '' = web links */
+  lineTechLiffId: string;
   /** Repeat "please accept this job" to the technician every N minutes while reserved (business hours); 0 = off */
   techAckReminderIntervalMinutes: number;
   /** Public URL of the staff web app (https://…), used for "open job" links in LINE messages; '' = no link */
@@ -156,6 +158,7 @@ export function loadAppConfig(env: Env = process.env): AppConfig {
     lineLoginChannelId: r.text('LINE_LOGIN_CHANNEL_ID', ''),
     lineIdentityVerifier: r.oneOf('LINE_IDENTITY_VERIFIER', 'line', ['line', 'mock'] as const),
     lineTechLoginChannelId: r.text('LINE_TECH_LOGIN_CHANNEL_ID', ''),
+    lineTechLiffId: r.text('LINE_TECH_LIFF_ID', ''),
     techAckReminderIntervalMinutes: r.int('TECH_ACK_REMINDER_INTERVAL_MINUTES', 0, 0, 1440),
     staffWebUrl: r.text('STAFF_WEB_URL', '').replace(/\/+$/, ''),
   };
