@@ -18,13 +18,16 @@ function orderIds(event: NotificationEvent): number[] {
   switch (event.type) {
     case 'JOB_RESERVED':
       return [event.repairOrderId];
+    case 'LINE_UNLINKED':
+      return [];
     default:
       return event.orders.map((o) => o.repairOrderId);
   }
 }
 
 function isEmpty(event: NotificationEvent): boolean {
-  return event.type !== 'JOB_RESERVED' && event.orders.length === 0;
+  if (event.type === 'JOB_RESERVED' || event.type === 'LINE_UNLINKED') return false;
+  return event.orders.length === 0;
 }
 
 /**

@@ -43,9 +43,18 @@ const router = Router();
  *       503:
  *         description: LINE for technicians not configured
  *   delete:
- *     summary: Unlink my LINE account
+ *     summary: Unlink my LINE account (reason required; every ADMIN is notified)
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason: { type: string, minLength: 3, maxLength: 300 }
  *     responses:
  *       200:
  *         description: "{ lineLinked: false }"

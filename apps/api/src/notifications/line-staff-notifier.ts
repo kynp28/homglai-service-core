@@ -13,6 +13,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  */
 export class LineStaffNotifier implements Notifier {
   async notify(event: NotificationEvent): Promise<NotifyResult> {
+    if (event.type === 'LINE_UNLINKED') return this.notifyAdmins(event);
     if (event.type !== 'JOB_RESERVED' && event.type !== 'PROGRESS_CHECK') return { delivered: 0 };
     if (event.type === 'PROGRESS_CHECK' && event.orders.length === 0) return { delivered: 0 };
 
@@ -55,6 +56,20 @@ export class LineStaffNotifier implements Notifier {
 
     const sent = await LineStaffApi.push(employee.lineUserId, [message]);
     return { delivered: sent ? 1 : 0 };
+  }
+
+  /** Text to every active ADMIN who linked LINE. */
+  private async notifyAdmins(event: NotificationEvent): Promise<NotifyResult> {
+    const admins = await prisma.employee.findMany({
+      where: { role: 'ADMIN', isActive: true, lineUserId: { not: null } },
+      select: { lineUserId: true },
+    });
+    const { title, body } = renderNotification(event);
+    let delivered = 0;
+    for (const a of admins) {
+      if (a.lineUserId && (await LineStaffApi.push(a.lineUserId, [{ type: 'text', text: clip(`${title}\n${body}`, 5000) }]))) delivered++;
+    }
+    return { delivered };
   }
 }
 

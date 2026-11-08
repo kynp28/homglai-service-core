@@ -64,7 +64,16 @@ export interface OrdersRequeuedDigestEvent {
   }>;
 }
 
+/** An employee unlinked their LINE account themselves, with a reason (to: every active ADMIN). */
+export interface LineUnlinkedEvent {
+  type: 'LINE_UNLINKED';
+  employeeId: number;
+  employeeName: string;
+  reason: string;
+}
+
 export type NotificationEvent =
+  | LineUnlinkedEvent
   | JobReservedEvent
   | AckOverdueDigestEvent
   | ProgressCheckEvent

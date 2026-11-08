@@ -40,7 +40,9 @@ export class EmployeeController {
   /** DELETE /api/employees/me/line — unlink. */
   static async unlinkLine(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      res.status(200).json({ status: 'success', data: await LineStaffService.unlinkEmployee(req.user!.employeeId) });
+      res
+        .status(200)
+        .json({ status: 'success', data: await LineStaffService.unlinkEmployee(req.user!.employeeId, req.body?.reason) });
     } catch (error) {
       next(error);
     }
