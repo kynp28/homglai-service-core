@@ -1,5 +1,7 @@
 import { getAppConfig } from '../config/env';
 import { DbNotifier } from './db-notifier';
+import { CompositeNotifier, LineStaffNotifier } from './line-staff-notifier';
+import { techLineEnabled } from '../services/line-staff-api';
 import { NotificationEvent, Notifier, NotifyResult } from './types';
 
 export * from './types';
@@ -17,7 +19,8 @@ export function getNotifier(): Notifier {
     switch (getAppConfig().notifierDriver) {
       case 'db':
       default:
-        notifier = new DbNotifier();
+        // Web inbox always; technicians' LINE as well once LINE_TECH_CHANNEL_ACCESS_TOKEN is set
+        notifier = techLineEnabled() ? new CompositeNotifier([new DbNotifier(), new LineStaffNotifier()]) : new DbNotifier();
     }
   }
   return notifier;

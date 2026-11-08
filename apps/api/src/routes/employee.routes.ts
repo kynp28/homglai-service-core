@@ -6,6 +6,56 @@ const router = Router();
 
 /**
  * @openapi
+ * /api/employees/me:
+ *   get:
+ *     summary: The signed-in employee (any role)
+ *     description: "{ id, username, name, role, status, weeklyDayOff, lineLinked } — lineUserId itself is never returned."
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Employee
+ * /api/employees/me/line:
+ *   post:
+ *     summary: Link my LINE account (technicians' LIFF)
+ *     description: |
+ *       Body { lineAccessToken } from liff.getAccessToken() of the technicians' LIFF. The server verifies it with
+ *       LINE (channel = LINE_TECH_LOGIN_CHANNEL_ID) and stores the userId; a lineUserId is never accepted from the client.
+ *       409 when the LINE account is already linked to another employee.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [lineAccessToken]
+ *             properties:
+ *               lineAccessToken: { type: string }
+ *     responses:
+ *       200:
+ *         description: "{ lineLinked: true }"
+ *       400:
+ *         description: Missing or invalid token
+ *       409:
+ *         description: LINE account linked to another employee
+ *       503:
+ *         description: LINE for technicians not configured
+ *   delete:
+ *     summary: Unlink my LINE account
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "{ lineLinked: false }"
+ */
+router.get('/me', authenticate, EmployeeController.me);
+router.post('/me/line', authenticate, EmployeeController.linkLine);
+router.delete('/me/line', authenticate, EmployeeController.unlinkLine);
+
+/**
+ * @openapi
  * /api/employees:
  *   post:
  *     summary: Create employee account (Admin only)

@@ -54,6 +54,10 @@ export interface AppConfig {
   lineLoginChannelId: string;
   /** 'line' verifies LIFF access tokens with LINE; 'mock' is accepted ONLY when NODE_ENV=test */
   lineIdentityVerifier: 'line' | 'mock';
+  /** LINE Login channel ID of the technicians' LIFF (link a LINE account to an employee) */
+  lineTechLoginChannelId: string;
+  /** Public URL of the staff web app (https://…), used for "open job" links in LINE messages; '' = no link */
+  staffWebUrl: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -149,6 +153,8 @@ export function loadAppConfig(env: Env = process.env): AppConfig {
     notifierDriver: r.oneOf('NOTIFIER_DRIVER', 'db', ['db'] as const),
     lineLoginChannelId: r.text('LINE_LOGIN_CHANNEL_ID', ''),
     lineIdentityVerifier: r.oneOf('LINE_IDENTITY_VERIFIER', 'line', ['line', 'mock'] as const),
+    lineTechLoginChannelId: r.text('LINE_TECH_LOGIN_CHANNEL_ID', ''),
+    staffWebUrl: r.text('STAFF_WEB_URL', '').replace(/\/+$/, ''),
   };
 
   // The mock LINE identity verifier trusts any "mock:<userId>" token: never allowed outside tests.
