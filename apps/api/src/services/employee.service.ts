@@ -47,7 +47,7 @@ export class EmployeeService {
   }
 
   static async getEmployees() {
-    return prisma.employee.findMany({
+    const employees = await prisma.employee.findMany({
       select: {
         id: true,
         username: true,
@@ -58,9 +58,12 @@ export class EmployeeService {
         weeklyDayOff: true,
         createdAt: true,
         updatedAt: true,
+        lineUserId: true,
       },
       orderBy: { id: 'asc' },
     });
+    // lineUserId itself is never returned; ADMIN only sees whether LINE is linked
+    return employees.map(({ lineUserId, ...e }) => ({ ...e, lineLinked: lineUserId !== null }));
   }
 
   /**

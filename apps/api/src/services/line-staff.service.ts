@@ -4,6 +4,7 @@ import { AppError } from '../utils/app-error';
 import { LineApiIdentityVerifier, LineIdentityVerifier, MockLineIdentityVerifier } from './line-identity';
 import { RepairService } from './repair.service';
 import { ACCEPT_JOB_ACTION, LineStaffApi } from './line-staff-api';
+import { notifySafely } from '../notifications';
 
 /**
  * LINE for technicians (separate Messaging API channel from the customers' OA):
@@ -48,8 +49,20 @@ export const LineStaffService = {
     return { lineLinked: true };
   },
 
-  async unlinkEmployee(employeeId: number) {
+  /**
+   * Self-unlink requires a reason (owner decision 2026-11-08): every active ADMIN is notified with it,
+   * so a technician cannot quietly switch off job notifications.
+   */
+  async unlinkEmployee(employeeId: number, reason: unknown) {
+    const text = typeof reason === 'string' ? reason.trim() : '';
+    if (text.length < 3 || text.length > 300) {
+      throw new AppError(400, 'กรุณาระบุเหตุผลที่ยกเลิกการผูก LINE (3–300 ตัวอักษร)');
+    }
+    const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: { name: true, lineUserId: true } });
+    if (!employee) throw new AppError(404, 'Employee not found');
+    if (employee.lineUserId === null) return { lineLinked: false };
     await prisma.employee.update({ where: { id: employeeId }, data: { lineUserId: null } });
+    await notifySafely({ type: 'LINE_UNLINKED', employeeId, employeeName: employee.name, reason: text });
     return { lineLinked: false };
   },
 

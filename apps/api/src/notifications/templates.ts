@@ -70,6 +70,11 @@ export function renderNotification(event: NotificationEvent): RenderedNotificati
           ...event.orders.map((o) => `- ใบงาน ${o.jobNumber}: ขั้นเดิม ${STAGE_LABELS[o.previousStatus]}`),
         ].join('\n'),
       };
+    case 'LINE_UNLINKED':
+      return {
+        title: `${event.employeeName} ยกเลิกการผูก LINE`,
+        body: `${event.employeeName} ยกเลิกการผูก LINE กับบัญชีพนักงาน จะไม่ได้รับแจ้งงานใหม่ทาง LINE\nเหตุผล: ${event.reason}`,
+      };
     default: {
       const unreachable: never = event;
       throw new Error(`Unknown notification event: ${JSON.stringify(unreachable)}`);
