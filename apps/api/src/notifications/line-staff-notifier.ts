@@ -1,6 +1,5 @@
 import prisma from '@homglai/db';
-import { getAppConfig } from '../config/env';
-import { ACCEPT_JOB_ACTION, LineStaffApi, STILL_WORKING_ACTION } from '../services/line-staff-api';
+import { ACCEPT_JOB_ACTION, LineStaffApi, STILL_WORKING_ACTION, staffJobUrl } from '../services/line-staff-api';
 import { renderNotification } from './templates';
 import { NotificationEvent, Notifier, NotifyResult } from './types';
 
@@ -31,9 +30,10 @@ export class LineStaffNotifier implements Notifier {
     if (!employee?.lineUserId) return { delivered: 0 };
 
     const { title, body } = renderNotification(event);
-    const webUrl = getAppConfig().staffWebUrl;
-    const openJob = (orderId: number) =>
-      webUrl.startsWith('https://') ? [{ type: 'uri', label: 'ดูใบงาน', uri: `${webUrl}/staff/repairs/${orderId}` }] : [];
+    const openJob = (orderId: number) => {
+      const uri = staffJobUrl(orderId);
+      return uri ? [{ type: 'uri', label: 'ดูใบงาน', uri }] : [];
+    };
     let message: Record<string, unknown>;
 
     if (event.type === 'JOB_RESERVED' || event.type === 'JOB_ACK_REMINDER') {

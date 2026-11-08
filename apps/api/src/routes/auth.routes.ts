@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { AuthController } from '../controllers/auth.controller';
+import rateLimit from 'express-rate-limit';
 import { authenticate, loginRateLimiter } from '../middlewares/auth.middleware';
+import { LineStaffService } from '../services/line-staff.service';
 
 const router = Router();
 
@@ -60,5 +62,49 @@ router.post('/login', loginRateLimiter, AuthController.login);
  *         description: Current password incorrect
  */
 router.post('/change-password', authenticate, AuthController.changePassword);
+
+/** Opening the LIFF app signs in every time, so this allows more attempts than the password login. */
+const lineLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many login attempts. Please try again later.' },
+});
+
+/**
+ * @openapi
+ * /api/auth/line:
+ *   post:
+ *     summary: Sign in with LINE (technicians' LIFF)
+ *     description: |
+ *       Body { lineAccessToken } from liff.getAccessToken() of the technicians' LIFF. The token is verified with LINE
+ *       (LINE_TECH_LOGIN_CHANNEL_ID) and must belong to a LINE account already linked to an active employee
+ *       (POST /api/employees/me/line). Returns the same { token, employee } as /api/auth/login.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [lineAccessToken]
+ *             properties:
+ *               lineAccessToken: { type: string }
+ *     responses:
+ *       200:
+ *         description: "{ token, employee }"
+ *       401:
+ *         description: Invalid LINE token
+ *       404:
+ *         description: LINE account not linked to an active employee (message LINE_NOT_LINKED)
+ */
+router.post('/line', lineLoginLimiter, async (req, res, next) => {
+  try {
+    const result = await LineStaffService.loginWithLine(req.body?.lineAccessToken);
+    res.status(200).json({ status: 'success', data: result });
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default router;

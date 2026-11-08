@@ -1,9 +1,12 @@
 import prisma from '@homglai/db';
-import { getAppConfig } from '../config/env';
+import { getAppConfig, getJwtSecret } from '../config/env';
 import { AppError } from '../utils/app-error';
 import { LineApiIdentityVerifier, LineIdentityVerifier, MockLineIdentityVerifier } from './line-identity';
 import { RepairService } from './repair.service';
-import { ACCEPT_JOB_ACTION, LineStaffApi, STILL_WORKING_ACTION } from './line-staff-api';
+import { ACCEPT_JOB_ACTION, LineStaffApi, START_REPAIR_ACTION, STILL_WORKING_ACTION, staffJobUrl } from './line-staff-api';
+import { computeAllowedActions } from '../utils/allowed-actions';
+import { statusLabelTh } from '../utils/customer-view';
+import jwt from 'jsonwebtoken';
 import { notifySafely } from '../notifications';
 
 /**
@@ -22,6 +25,29 @@ export const LineStaffService = {
       return new MockLineIdentityVerifier();
     }
     return new LineApiIdentityVerifier(config.lineTechLoginChannelId);
+  },
+
+  /**
+   * POST /api/auth/line — sign in from the technicians' LIFF without a password: the LIFF token is verified
+   * with LINE and must belong to a LINE account already linked to an active employee. Returns the same
+   * { token, employee } as /api/auth/login (12-hour JWT).
+   */
+  async loginWithLine(lineAccessToken: unknown) {
+    if (typeof lineAccessToken !== 'string' || lineAccessToken.length === 0 || lineAccessToken.length > 2000) {
+      throw new AppError(400, 'lineAccessToken is required');
+    }
+    const lineUserId = await LineStaffService.verifier().verify(lineAccessToken);
+    if (!lineUserId) throw new AppError(401, 'LINE token is invalid or was not issued by the technicians\' LIFF');
+    const employee = await prisma.employee.findFirst({
+      where: { lineUserId, isActive: true },
+      select: { id: true, username: true, name: true, role: true, status: true },
+    });
+    if (!employee) throw new AppError(404, 'LINE_NOT_LINKED');
+    const token = jwt.sign({ employeeId: employee.id, role: employee.role }, getJwtSecret(), {
+      algorithm: 'HS256',
+      expiresIn: '12h',
+    });
+    return { token, employee };
   },
 
   /** Links the LINE account behind a technicians'-LIFF access token to an employee. */
@@ -98,6 +124,80 @@ function parsePostback(data: unknown): { action: string; orderId: number } | nul
 const NOT_LINKED_REPLY =
   'บัญชี LINE นี้ยังไม่ได้ผูกกับบัญชีพนักงาน กรุณาเปิดเมนู "ผูกบัญชีพนักงาน" แล้วเข้าสู่ระบบด้วยชื่อผู้ใช้ของคุณก่อน';
 
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/**
+ * "Job card": the job's current status with the buttons for its NEXT steps (from computeAllowedActions —
+ * the same rules as the web app). One-tap steps are postbacks; steps that need input open the LIFF app.
+ * LINE buttons templates hold at most 4 actions: up to 3 steps + "เปิดใบงาน".
+ */
+export async function buildJobCard(orderId: number, actor: { id: number; role: string }): Promise<Record<string, unknown> | null> {
+  const order = await prisma.repairOrder.findUnique({
+    where: { id: orderId },
+    select: {
+      id: true,
+      jobNumber: true,
+      status: true,
+      repairOutcome: true,
+      technicianId: true,
+      acknowledgedAt: true,
+      machine: { select: { brand: true, model: true } },
+      repairItems: { select: { status: true } },
+    },
+  });
+  if (!order) return null;
+  const allowed = computeAllowedActions(actor, {
+    status: order.status,
+    technicianId: order.technicianId,
+    acknowledgedAt: order.acknowledgedAt,
+    itemStatuses: order.repairItems.map((i) => i.status),
+  });
+  const postback = (label: string, action: string, displayText: string) => ({
+    type: 'postback',
+    label,
+    data: `action=${action}&orderId=${order.id}`,
+    displayText,
+  });
+  const link = (label: string, step?: string) => {
+    const uri = staffJobUrl(order.id, step);
+    return uri ? { type: 'uri', label, uri } : null;
+  };
+
+  const steps: Array<Record<string, unknown> | null> = [];
+  if (allowed.includes('ACCEPT')) steps.push(postback('รับงานนี้', ACCEPT_JOB_ACTION, `รับงาน ${order.jobNumber}`));
+  if (allowed.includes('ADD_ITEM')) steps.push(link('เพิ่มรายการ/ราคา', 'add-item'));
+  if (allowed.includes('START_REPAIR')) steps.push(postback('เริ่มซ่อม', START_REPAIR_ACTION, `เริ่มซ่อม ${order.jobNumber}`));
+  if (allowed.includes('COMPLETE_ITEM')) steps.push(link('ทำรายการเสร็จ'));
+  if (allowed.includes('COMPLETE')) steps.push(link('ส่งงานซ่อม', 'complete'));
+  if (allowed.includes('STILL_WORKING')) steps.push(postback('ยังซ่อมอยู่', STILL_WORKING_ACTION, `ยังซ่อมอยู่ ${order.jobNumber}`));
+  const actions = steps.filter((a): a is Record<string, unknown> => a !== null).slice(0, 3);
+  const open = link('เปิดใบงาน');
+  if (open) actions.push(open);
+  if (actions.length === 0) return null;
+
+  const status = statusLabelTh(order.status, order.repairOutcome);
+  return {
+    type: 'template',
+    altText: clip(`${order.jobNumber}: ${status}`, 400),
+    template: {
+      type: 'buttons',
+      title: clip(order.jobNumber, 40),
+      text: clip(`${order.machine.brand} ${order.machine.model} · ${status}`, 60),
+      actions,
+    },
+  };
+}
+
+/** Thai reply for an AppError from a job action. */
+function actionErrorText(err: any, fallback: string): string {
+  const status = err instanceof AppError ? err.statusCode : 500;
+  if (status >= 500) console.error('[LINE Tech Webhook] action failed:', err?.message || err);
+  if (status === 403) return 'ทำรายการไม่ได้: ใบงานนี้ไม่ได้อยู่กับคุณ';
+  if (status === 404) return 'ไม่พบใบงานนี้';
+  if (status === 409) return 'ทำรายการไม่ได้: สถานะใบงานเปลี่ยนไปแล้ว — กด "เปิดใบงาน" เพื่อดูสถานะล่าสุด';
+  return fallback;
+}
+
 async function handleEvent(event: any): Promise<void> {
   const lineUserId: string | undefined = event?.source?.userId;
   const replyToken: string = event?.replyToken ?? '';
@@ -118,54 +218,33 @@ async function handleEvent(event: any): Promise<void> {
 
   if (event.type !== 'postback') return;
   const postback = parsePostback(event.postback?.data);
-  if (!postback || (postback.action !== ACCEPT_JOB_ACTION && postback.action !== STILL_WORKING_ACTION)) return;
+  const known = [ACCEPT_JOB_ACTION, STILL_WORKING_ACTION, START_REPAIR_ACTION];
+  if (!postback || !known.includes(postback.action)) return;
 
   if (!employee || (employee.role !== 'TECHNICIAN' && employee.role !== 'ADMIN')) {
     await LineStaffApi.reply(replyToken, NOT_LINKED_REPLY);
     return;
   }
+  const actor = { id: employee.id, role: employee.role };
 
-  if (postback.action === STILL_WORKING_ACTION) {
-    try {
-      const order: any = await RepairService.stillWorking(postback.orderId, { id: employee.id, role: employee.role });
-      await LineStaffApi.reply(
-        replyToken,
-        `รับทราบ ใบงาน ${order?.jobNumber ?? ''} ยังซ่อมอยู่ ระบบจะเริ่มนับเวลาเตือนใหม่`
-      );
-    } catch (err: any) {
-      const status = err instanceof AppError ? err.statusCode : 500;
-      const text =
-        status === 403
-          ? 'ใบงานนี้ไม่ได้อยู่กับคุณแล้ว'
-          : status === 404
-            ? 'ไม่พบใบงานนี้'
-            : status === 409
-              ? 'ใบงานนี้ไม่ได้อยู่ระหว่างซ่อมแล้ว (อาจส่งงานหรือถูกยกเลิกไปแล้ว)'
-              : 'บันทึกไม่สำเร็จ กรุณาลองใหม่ หรือกด "ยังซ่อมอยู่" ในหน้าเว็บ';
-      if (status >= 500) console.error('[LINE Tech Webhook] still-working failed:', err?.message || err);
-      await LineStaffApi.reply(replyToken, text);
+  let text: string;
+  try {
+    if (postback.action === ACCEPT_JOB_ACTION) {
+      const order: any = await RepairService.acceptOrder(postback.orderId, actor);
+      text = `รับงาน ${order?.jobNumber ?? ''} เรียบร้อยแล้ว สถานะ: กำลังตรวจเช็ค`;
+    } else if (postback.action === STILL_WORKING_ACTION) {
+      const order: any = await RepairService.stillWorking(postback.orderId, actor);
+      text = `รับทราบ ใบงาน ${order?.jobNumber ?? ''} ยังซ่อมอยู่ ระบบจะเริ่มนับเวลาเตือนใหม่`;
+    } else {
+      const order: any = await RepairService.updateStatus(postback.orderId, 'REPAIRING', actor);
+      text = `เริ่มซ่อม ${order?.jobNumber ?? ''} แล้ว สถานะ: กำลังซ่อม`;
     }
+  } catch (err: any) {
+    await LineStaffApi.reply(replyToken, actionErrorText(err, 'ทำรายการไม่สำเร็จ กรุณาลองใหม่ หรือกด "เปิดใบงาน"'));
     return;
   }
 
-  try {
-    const order: any = await RepairService.acceptOrder(postback.orderId, { id: employee.id, role: employee.role });
-    const machine = order?.machine ? ` (เครื่อง ${order.machine.brand} ${order.machine.model})` : '';
-    await LineStaffApi.reply(
-      replyToken,
-      `รับงาน ${order?.jobNumber ?? ''}${machine} เรียบร้อยแล้ว สถานะ: กำลังตรวจเช็ค`
-    );
-  } catch (err: any) {
-    const status = err instanceof AppError ? err.statusCode : 500;
-    const text =
-      status === 403
-        ? 'รับงานไม่ได้: งานนี้ไม่ได้จ่ายให้คุณ'
-        : status === 404
-          ? 'ไม่พบใบงานนี้'
-          : status === 409
-            ? 'รับงานไม่ได้: งานนี้ถูกรับไปแล้ว หรือถูกปล่อยคืนเข้าคิวแล้ว'
-            : 'รับงานไม่สำเร็จ กรุณาลองใหม่ หรือกดรับในหน้าเว็บ';
-    if (status >= 500) console.error('[LINE Tech Webhook] accept failed:', err?.message || err);
-    await LineStaffApi.reply(replyToken, text);
-  }
+  // Reply with the result + the job card for the next step
+  const card = await buildJobCard(postback.orderId, actor).catch(() => null);
+  await LineStaffApi.replyMessages(replyToken, card ? [{ type: 'text', text }, card] : [{ type: 'text', text }]);
 }
